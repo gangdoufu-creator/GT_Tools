@@ -102,6 +102,7 @@ def ui():
     '''
     User interface for world bake
     '''
+    print("Debug: Launching UI...")
 
     with utl.MlUi('ml_worldBake', 'World Bake', width=400, height=200, info='''Select objects, bake to locators in world, camera, or custom space.
 When you're ready to bake back, select locators
@@ -119,12 +120,15 @@ and bake "from locators" to re-apply your animation.''') as win:
                        annotation='Constrain source nodes to the created locators, after baking.')
         mc.checkBoxGrp('ml_worldBake_currentFrameOnly_checkBox',label='Current Frame Only',
                        annotation='Create constraint to locator parented to last selected object (no animation baking).')
+        mc.checkBoxGrp('ml_worldBake_setToZero_checkBox',label='Set Locator to Zero',
+                       annotation='Set the locator transforms to zero after creation.')
 
         win.ButtonWithPopup(label='Bake Selection To Locators', command=toLocators, annotation='Bake selected object to locators specified space.',
             readUI_toArgs={'bakeOnOnes':'ml_worldBake_bakeOnOnes_checkBox',
                            'spaceInt':'ml_worldBake_space_radioButton',
                            'constrainSource':'ml_worldBake_constrain_checkBox',
-                           'currentFrameOnly':'ml_worldBake_currentFrameOnly_checkBox'},
+                           'currentFrameOnly':'ml_worldBake_currentFrameOnly_checkBox',
+                           'setToZero':'ml_worldBake_setToZero_checkBox'},
             name=win.name)
         mc.setParent('..')
 
@@ -149,20 +153,27 @@ and bake "from locators" to re-apply your animation.''') as win:
 
         mc.tabLayout( tabs, edit=True, tabLabel=((tab1, 'Bake To Locators'), (tab2, 'Bake From Locators'), (tab3, 'Bake Selection')) )
 
+    print("Debug: UI launched successfully.")
 
-def currentFrameConstraint(firstObj, parent):
+
+def currentFrameConstraint(firstObj, parent, setToZero=False):
     '''
     Creates a locator parented to the last selected object (parent),
     positioned at the current location of the first selected object.
     The first object is then constrained to this locator.
     No animation baking occurs.
+
+    Args:
+        firstObj (str): The first selected object to constrain.
+        parent (str): The second selected object to parent the locator to.
+        setToZero (bool): If True, sets the locator's transforms to zero after creation.
     '''
     if not firstObj or not parent:
         OpenMaya.MGlobal.displayWarning('Error: invalid objects.')
         return
 
     # Debug: Print selected objects
-    print(f"Debug: First object: {firstObj}, Parent: {parent}")
+    print(f"Debug: First object: {firstObj}, Parent: {parent}, Set to Zero: {setToZero}")
 
     name = mc.ls(firstObj, shortNames=True)[0]
     if ':' in name:
@@ -187,10 +198,32 @@ def currentFrameConstraint(firstObj, parent):
     # Debug: Print locator parenting
     print(f"Debug: Locator {locator} parented to {parent}")
 
-    # Do NOT freeze transforms to preserve the offset relative to the parent
+    # Constrain first object to the locator, handling locked attributes
+    try:
+        # Check for unlocked translation and rotation attributes
+        unlocked_translate = [attr for attr in ['translateX', 'translateY', 'translateZ'] 
+                              if not mc.getAttr(f"{firstObj}.{attr}", lock=True)]
+        unlocked_rotate = [attr for attr in ['rotateX', 'rotateY', 'rotateZ'] 
+                           if not mc.getAttr(f"{firstObj}.{attr}", lock=True)]
 
-    # Constrain first object to the locator
-    mc.parentConstraint(locator, firstObj)
+        # Apply pointConstraint for translation if any translation attributes are unlocked
+        if unlocked_translate:
+            mc.pointConstraint(locator, firstObj, maintainOffset=True)
+            print(f"Debug: Applied pointConstraint for {unlocked_translate}")
+
+        # Apply orientConstraint for rotation if any rotation attributes are unlocked
+        if unlocked_rotate:
+            mc.orientConstraint(locator, firstObj, maintainOffset=True)
+            print(f"Debug: Applied orientConstraint for {unlocked_rotate}")
+
+    except RuntimeError as e:
+        OpenMaya.MGlobal.displayWarning(f"Constraint failed: {e}")
+
+    # Optionally set locator transforms to zero AFTER the constraint is applied
+    if setToZero:
+        mc.setAttr(locator + '.translate', 0, 0, 0)
+        mc.setAttr(locator + '.rotate', 0, 0, 0)
+        print(f"Debug: Locator {locator} transforms set to zero.")
 
     # Debug: Print constraint application
     print(f"Debug: {firstObj} constrained to {locator}")
@@ -204,7 +237,7 @@ def currentFrameConstraint(firstObj, parent):
     mc.select(locator)
 
 
-def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=False, currentFrameOnly=False):
+def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=False, currentFrameOnly=False, setToZero=False):
     '''
     Creates locators, and bakes their position to selection.
     Creates connections to the source objects, so they can
@@ -212,10 +245,18 @@ def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=F
 
     If currentFrameOnly is True, creates a constraint to a locator parented 
     to the last selected object instead of baking animation.
+
+    Args:
+        bakeOnOnes (bool): Whether to bake on every frame.
+        space (str): The space to bake to ('world', 'camera', 'last').
+        spaceInt (int): Integer representation of the space.
+        constrainSource (bool): Whether to constrain the source object.
+        currentFrameOnly (bool): Whether to use the "Current Frame Only" mode.
+        setToZero (bool): Whether to set the locator's transforms to zero after creation.
     '''
 
     # Debug: Print function arguments
-    print(f"Debug: toLocators called with bakeOnOnes={bakeOnOnes}, space={space}, spaceInt={spaceInt}, constrainSource={constrainSource}, currentFrameOnly={currentFrameOnly}")
+    print(f"Debug: toLocators called with bakeOnOnes={bakeOnOnes}, space={space}, spaceInt={spaceInt}, constrainSource={constrainSource}, currentFrameOnly={currentFrameOnly}, setToZero={setToZero}")
 
     if spaceInt and 0 <= spaceInt <= 2:
         space = ['world', 'camera', 'last'][spaceInt]
@@ -237,7 +278,7 @@ def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=F
             OpenMaya.MGlobal.displayWarning('Select objects, with the parent as the last selection.')
             return
         print("Debug: Calling currentFrameConstraint")
-        currentFrameConstraint(sel[0], parent)
+        currentFrameConstraint(sel[0], parent, setToZero=setToZero)
     else:
         # Normal baking mode
         mc.select(sel)
