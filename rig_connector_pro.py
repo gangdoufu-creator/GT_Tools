@@ -441,29 +441,63 @@ class RigConnector:
                         except Exception as e:
                             print(f"Warning: {e}")
         
-        # Disconnect and delete constraints (this properly removes constraint influence)
+        # Disconnect and delete constraints - store transforms first to prevent jumping
         for constraint in self.constraint_nodes:
             try:
                 if cmds.objExists(constraint):
                     # Get the constrained object
                     constrained = cmds.listConnections(constraint, type='transform', destination=True)
-                    if constrained:
-                        # Delete constraint (Maya automatically removes constraint influence)
+                    if constrained and len(constrained) > 0:
+                        target = constrained[0]
+                        
+                        # Store current transform values
+                        stored_values = {}
+                        for attr in ['tx', 'ty', 'tz', 'rx', 'ry', 'rz']:
+                            try:
+                                if cmds.getAttr(f"{target}.{attr}", settable=True):
+                                    stored_values[attr] = cmds.getAttr(f"{target}.{attr}")
+                            except:
+                                pass
+                        
+                        # Delete constraint
                         cmds.delete(constraint)
+                        
+                        # Restore transform values to prevent jumping
+                        for attr, value in stored_values.items():
+                            try:
+                                if cmds.getAttr(f"{target}.{attr}", settable=True):
+                                    cmds.setAttr(f"{target}.{attr}", value)
+                            except:
+                                pass
             except Exception as e:
                 print(f"Warning cleaning constraint {constraint}: {e}")
         
-        # Disconnect and delete blend nodes
+        # Disconnect and delete blend nodes - but first unlock and reset target attributes
         for blend_node in self.blend_nodes:
             try:
                 if cmds.objExists(blend_node):
                     # Get output connections
-                    outputs = cmds.listConnections(blend_node, source=False, plugs=True) or []
-                    # Disconnect outputs first
+                    outputs = cmds.listConnections(blend_node, source=False, plugs=True, destination=True) or []
+                    
+                    # For each output, store the current value, disconnect, then restore
                     for output in outputs:
-                        input_plug = cmds.listConnections(output, source=True, plugs=True, destination=False)
-                        if input_plug:
-                            cmds.disconnectAttr(input_plug[0], output)
+                        try:
+                            # Get current value before disconnect
+                            current_value = cmds.getAttr(output)
+                            
+                            # Find the input connection
+                            input_plugs = cmds.listConnections(output, source=True, plugs=True, destination=False) or []
+                            
+                            # Disconnect
+                            for input_plug in input_plugs:
+                                if 'rig_connector' in input_plug:
+                                    cmds.disconnectAttr(input_plug, output)
+                            
+                            # Set back to the value it had (this prevents it from jumping)
+                            cmds.setAttr(output, current_value)
+                        except Exception as e:
+                            print(f"  Warning disconnecting {output}: {e}")
+                    
                     # Now delete the node
                     cmds.delete(blend_node)
             except Exception as e:
@@ -1045,7 +1079,568 @@ class RigConnectorUI:
     
     def open_mapping_ui(self, *args):
         """Open the control mapping interface."""
-        cmds.warning("Control mapping UI coming soon...")
+        # Get target and drivers from UI
+        target_set = cmds.textField(self.target_field, query=True, text=True)
+        if not target_set or not cmds.objExists(target_set):
+            cmds.warning("Please set a target rig first")
+            return
+        
+        # Collect driver sets
+        driver_sets = []
+        for row in self.driver_ui_rows:
+            driver_set = cmds.textField(row['set_field'], query=True, text=True)
+            if driver_set and cmds.objExists(driver_set):
+                driver_sets.append(driver_set)
+        
+        if not driver_sets:
+            cmds.warning("Please add at least one driver rig")
+            return
+        
+        # Set up connector with current rigs
+        self.connector.set_target(target_set)
+        self.connector.drivers = []
+        for driver_set in driver_sets:
+            weight = 0.5
+            self.connector.add_driver(driver_set, weight)
+        
+        # Auto-match controls if not already done
+        if not self.connector.control_mapping:
+            self.connector.auto_match_controls()
+        
+        # Open mapping UI
+        mapping_ui = ControlMappingUI(self.connector)
+        mapping_ui.create_ui()
+
+
+class ControlMappingUI:
+    """UI for manually remapping controls between rigs."""
+    
+    def __init__(self, connector):
+        self.connector = connector
+        self.window_name = "ControlMappingUI"
+        self.mapping_rows = []
+        
+    def create_ui(self):
+        """Build the control mapping window."""
+        if cmds.window(self.window_name, exists=True):
+            cmds.deleteUI(self.window_name, window=True)
+        
+        self.window = cmds.window(
+            self.window_name,
+            title="Control Mapping / Retargeting",
+            widthHeight=(1000, 600),
+            sizeable=True
+        )
+        
+        main_layout = cmds.scrollLayout(childResizable=True)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+        
+        # Header
+        cmds.separator(height=10, style="none")
+        cmds.text(label="CONTROL MAPPING", font="boldLabelFont", height=30)
+        cmds.text(label="Map target controls to driver controls. Use 'MISSING' for controls that don't exist.", align="left")
+        cmds.separator(height=10, style="in")
+        
+        # Search/Filter
+        cmds.rowLayout(numberOfColumns=5, columnWidth5=(100, 400, 150, 150, 150))
+        cmds.text(label="Search/Filter:", align="right")
+        self.search_field = cmds.textField(changeCommand=self.filter_rows, annotation="Type to filter controls")
+        cmds.button(label="Show All", command=self.show_all)
+        cmds.button(label="Show Missing Only", command=self.show_missing_only, backgroundColor=[0.7, 0.5, 0.3])
+        cmds.button(label="Add to Search", command=self.add_selection_to_search, backgroundColor=[0.4, 0.6, 0.7], annotation="Add selected control name to search field")
+        cmds.setParent('..')
+        cmds.separator(height=5, style="none")
+        
+        # Column headers
+        num_drivers = len(self.connector.drivers)
+        header_widths = [40, 250] + [200] * num_drivers + [80]
+        cmds.rowLayout(numberOfColumns=len(header_widths), columnWidth=[(i+1, w) for i, w in enumerate(header_widths)])
+        cmds.text(label="#", font="boldLabelFont")
+        cmds.text(label="Target Control", font="boldLabelFont", align="left")
+        for i in range(num_drivers):
+            cmds.text(label=f"Driver {i+1}", font="boldLabelFont", align="left")
+        cmds.text(label="Action", font="boldLabelFont")
+        cmds.setParent('..')
+        
+        cmds.separator(height=5, style="in")
+        
+        # Scroll layout for mappings
+        self.mapping_scroll = cmds.scrollLayout(childResizable=True, height=400)
+        self.mapping_column = cmds.columnLayout(adjustableColumn=True, rowSpacing=2)
+        
+        # Build mapping rows
+        self._build_mapping_rows()
+        
+        cmds.setParent('..')
+        cmds.setParent('..')
+        
+        # Action buttons
+        cmds.separator(height=10, style="in")
+        cmds.rowLayout(numberOfColumns=4, columnWidth4=(245, 245, 245, 245))
+        cmds.button(label="Auto-Match All", command=self.auto_match_all, backgroundColor=[0.3, 0.6, 0.5])
+        cmds.button(label="Clear All", command=self.clear_all, backgroundColor=[0.6, 0.4, 0.3])
+        cmds.button(label="Apply Mapping", command=self.apply_mapping, height=40, backgroundColor=[0.3, 0.7, 0.5])
+        cmds.button(label="Close", command=self.close_window, backgroundColor=[0.5, 0.5, 0.5])
+        cmds.setParent('..')
+        
+        cmds.separator(height=10, style="none")
+        
+        cmds.showWindow(self.window)
+    
+    def _build_mapping_rows(self):
+        """Build a row for each target control."""
+        cmds.setParent(self.mapping_column)
+        
+        self.mapping_rows = []
+        num_drivers = len(self.connector.drivers)
+        
+        for idx, (target_ctrl, driver_ctrls) in enumerate(self.connector.control_mapping.items()):
+            # Strip namespace for display
+            target_display = target_ctrl.split(':')[-1].split('|')[-1]
+            
+            # Create row
+            row_widths = [40, 250] + [200] * num_drivers + [80]
+            row_layout = cmds.rowLayout(numberOfColumns=len(row_widths), columnWidth=[(i+1, w) for i, w in enumerate(row_widths)])
+            
+            # Index
+            cmds.text(label=f"{idx+1}", align="center")
+            
+            # Target control (non-editable)
+            cmds.textField(text=target_display, editable=False, backgroundColor=[0.2, 0.2, 0.2])
+            
+            # Driver control fields
+            driver_fields = []
+            for i, driver_ctrl in enumerate(driver_ctrls):
+                if driver_ctrl and cmds.objExists(driver_ctrl):
+                    driver_display = driver_ctrl.split(':')[-1].split('|')[-1]
+                else:
+                    driver_display = "MISSING"
+                
+                field = cmds.textField(text=driver_display, annotation=f"Driver {i+1} control for {target_display}")
+                driver_fields.append(field)
+            
+            # Create row data first
+            row_data = {
+                'target_ctrl': target_ctrl,
+                'target_display': target_display,
+                'target_field': None,  # Not needed, it's read-only
+                'driver_fields': driver_fields,
+                'original_drivers': driver_ctrls,
+                'row_layout': row_layout,
+                'visible': True
+            }
+            
+            # Replace with Selection button - use row_data directly
+            cmds.button(label="Replace", command=lambda *args, r=row_data: self.replace_with_selection(r), backgroundColor=[0.4, 0.7, 0.5], annotation="Replace MISSING driver fields with current selection")
+            
+            cmds.setParent('..')
+            
+            # Add to list
+            self.mapping_rows.append(row_data)
+    
+    def replace_with_selection(self, row):
+        """Replace MISSING driver fields with currently selected control."""
+        if not row:
+            return
+        
+        selection = cmds.ls(selection=True)
+        if not selection:
+            cmds.warning("Nothing selected. Please select a control first.")
+            return
+        
+        selected_ctrl = selection[0]
+        ctrl_name = selected_ctrl.split(':')[-1].split('|')[-1]
+        
+        # Find which driver this control belongs to
+        driver_index = None
+        for i, driver in enumerate(self.connector.drivers):
+            if selected_ctrl in driver.controls:
+                driver_index = i
+                break
+        
+        if driver_index is not None:
+            # Replace the field for this driver
+            if driver_index < len(row['driver_fields']):
+                field = row['driver_fields'][driver_index]
+                current_value = cmds.textField(field, query=True, text=True)
+                
+                cmds.textField(field, edit=True, text=ctrl_name)
+                print(f"✓ Replaced '{current_value}' with '{ctrl_name}' in {row['target_display']} -> Driver {driver_index + 1}")
+                
+                cmds.inViewMessage(
+                    amg=f"Replaced <hl>{current_value}</hl> with <hl>{ctrl_name}</hl>",
+                    pos='topCenter',
+                    fade=True,
+                    fadeStayTime=2000
+                )
+        else:
+            # Control not found in any driver - ask which driver field to replace
+            cmds.warning(f"Selected control '{ctrl_name}' not found in any driver rig. It may not be a valid control.")
+    
+    def add_selection_to_search(self, *args):
+        """Add selected control name to search field."""
+        selection = cmds.ls(selection=True)
+        if not selection:
+            cmds.warning("Nothing selected")
+            return
+        
+        selected_ctrl = selection[0]
+        ctrl_name = selected_ctrl.split(':')[-1].split('|')[-1]
+        
+        # Set search field and trigger filter
+        cmds.textField(self.search_field, edit=True, text=ctrl_name)
+        self.filter_rows()
+        
+        print(f"✓ Added '{ctrl_name}' to search filter")
+    
+    def auto_match_all(self, *args):
+        """Re-run auto matching."""
+        self.connector.auto_match_controls()
+        self._rebuild_rows()
+        print("✓ Auto-matched all controls")
+    
+    def clear_all(self, *args):
+        """Clear all driver mappings."""
+        for target_ctrl in self.connector.control_mapping:
+            self.connector.control_mapping[target_ctrl] = [None] * len(self.connector.drivers)
+        self._rebuild_rows()
+        print("✓ Cleared all mappings")
+    
+    def _rebuild_rows(self):
+        """Rebuild the mapping rows."""
+        # Delete old rows
+        if cmds.columnLayout(self.mapping_column, exists=True):
+            children = cmds.columnLayout(self.mapping_column, query=True, childArray=True) or []
+            for child in children:
+                cmds.deleteUI(child)
+        
+        # Rebuild
+        self._build_mapping_rows()
+    
+    def apply_mapping(self, *args):
+        """Apply the manual mappings and reconnect changed controls."""
+        print("\n=== Applying control mapping ===")
+        
+        # Store old mapping for comparison
+        old_mapping = dict(self.connector.control_mapping)
+        
+        # Read new mappings from UI
+        for row in self.mapping_rows:
+            target_ctrl = row['target_ctrl']
+            
+            # Read driver fields
+            new_drivers = []
+            for i, field in enumerate(row['driver_fields']):
+                driver_display = cmds.textField(field, query=True, text=True).strip()
+                
+                if driver_display == "MISSING" or driver_display == "":
+                    # Keep as None
+                    new_drivers.append(None)
+                else:
+                    # Try to find the control in the driver rig
+                    driver = self.connector.drivers[i]
+                    found = None
+                    
+                    # Search in driver controls
+                    for ctrl in driver.controls:
+                        ctrl_name = ctrl.split(':')[-1].split('|')[-1]
+                        if ctrl_name == driver_display:
+                            found = ctrl
+                            break
+                    
+                    if found:
+                        new_drivers.append(found)
+                    else:
+                        # Try with namespace
+                        full_name = f"{driver.namespace}:{driver_display}" if driver.namespace else driver_display
+                        if cmds.objExists(full_name):
+                            new_drivers.append(full_name)
+                        else:
+                            print(f"Warning: Could not find driver control '{driver_display}' in driver {i+1}")
+                            new_drivers.append(None)
+            
+            # Update mapping
+            self.connector.control_mapping[target_ctrl] = new_drivers
+        
+        # Check if connection already exists
+        if not self.connector.control_locator:
+            # Try to find existing controller
+            if cmds.objExists("rig_connector_CTRL"):
+                self.connector.control_locator = "rig_connector_CTRL"
+                print("Found existing rig_connector_CTRL")
+            else:
+                print("✓ Applied control mapping")
+                cmds.confirmDialog(title="Success", message="Control mapping applied!\n\nNow click 'Connect Rigs' to connect with the new mapping.", button=["OK"])
+                return
+        
+        if not cmds.objExists(self.connector.control_locator):
+            print("✓ Applied control mapping (no active connection)")
+            cmds.confirmDialog(title="Success", message="Control mapping applied!\n\nNow click 'Connect Rigs' to connect with the new mapping.", button=["OK"])
+            return
+        
+        # Reconnect changed controls
+        print("\n=== Reconnecting changed controls ===")
+        print(f"Comparing {len(self.connector.control_mapping)} controls")
+        changes_made = 0
+        
+        for target_ctrl, new_drivers in self.connector.control_mapping.items():
+            old_drivers = old_mapping.get(target_ctrl, [])
+            
+            # Check if mapping changed
+            if old_drivers != new_drivers:
+                changes_made += 1
+                print(f"\nReconnecting: {target_ctrl.split(':')[-1]}")
+                print(f"  Old: {[d.split(':')[-1] if d else 'None' for d in old_drivers]}")
+                print(f"  New: {[d.split(':')[-1] if d else 'None' for d in new_drivers]}")
+                
+                # Remove old constraints for this control
+                self._remove_constraints_for_control(target_ctrl)
+                
+                # Remove old blend connections for this control
+                self._remove_blend_connections_for_control(target_ctrl)
+                
+                # Create new connections
+                valid_drivers = [ctrl for ctrl in new_drivers if ctrl is not None]
+                
+                if valid_drivers:
+                    # Create constraints for translate/rotate
+                    if self.connector.use_constraints:
+                        self.connector._create_constraints_for_control(target_ctrl, valid_drivers)
+                    
+                    # Create blend nodes for custom attributes
+                    self.connector._create_blend_connections_for_control(target_ctrl, valid_drivers)
+                    
+                    print(f"✓ Reconnected {target_ctrl.split(':')[-1]} with {len(valid_drivers)} driver(s)")
+        
+        if changes_made > 0:
+            print(f"\n✓ Applied mapping and reconnected {changes_made} control(s)")
+            cmds.confirmDialog(title="Success", message=f"Control mapping applied and {changes_made} control(s) reconnected!", button=["OK"])
+        else:
+            print("✓ No changes detected")
+            cmds.confirmDialog(title="Info", message="No mapping changes detected.", button=["OK"])
+    
+    def _remove_constraints_for_control(self, target_ctrl):
+        """Remove constraints affecting a specific control."""
+        # Get all constraints on the target control
+        constraints = cmds.listConnections(target_ctrl, type='constraint') or []
+        
+        for constraint in constraints:
+            if 'rig_connector' in constraint:
+                try:
+                    # Remove from tracking list
+                    if constraint in self.connector.constraint_nodes:
+                        self.connector.constraint_nodes.remove(constraint)
+                    
+                    # Delete constraint
+                    if cmds.objExists(constraint):
+                        cmds.delete(constraint)
+                        print(f"  Removed constraint: {constraint}")
+                except Exception as e:
+                    print(f"  Warning: Could not remove constraint {constraint}: {e}")
+    
+    def _remove_blend_connections_for_control(self, target_ctrl):
+        """Remove blend node connections for a specific control."""
+        try:
+            # Get keyable attributes
+            keyable_attrs = cmds.listAttr(target_ctrl, keyable=True, unlocked=True, visible=True) or []
+            
+            # Filter to custom attributes
+            standard_attrs = ['tx', 'ty', 'tz', 'rx', 'ry', 'rz', 'sx', 'sy', 'sz', 'v']
+            custom_attrs = [attr for attr in keyable_attrs if attr not in standard_attrs]
+            
+            for attr in custom_attrs:
+                # Get input connections to this attribute
+                connections = cmds.listConnections(f"{target_ctrl}.{attr}", source=True, plugs=True, destination=False) or []
+                
+                for conn in connections:
+                    node = conn.split('.')[0]
+                    if 'rig_connector' in node:
+                        # Disconnect
+                        cmds.disconnectAttr(conn, f"{target_ctrl}.{attr}")
+                        print(f"  Disconnected: {conn} -> {target_ctrl}.{attr}")
+                        
+                        # Delete the node if it exists
+                        if cmds.objExists(node):
+                            # Remove from tracking
+                            if node in self.connector.blend_nodes:
+                                self.connector.blend_nodes.remove(node)
+                            
+                            cmds.delete(node)
+        
+        except Exception as e:
+            print(f"  Warning: Error removing blend connections for {target_ctrl}: {e}")
+    
+    def filter_rows(self, *args):
+        """Filter rows based on search text - searches target and all driver controls."""
+        search_text = cmds.textField(self.search_field, query=True, text=True).lower().strip()
+        
+        for row in self.mapping_rows:
+            if not search_text:
+                # Show all if search is empty
+                self._show_row(row)
+            else:
+                # Check if search text matches target control
+                target_match = search_text in row['target_display'].lower()
+                
+                # Check if search text matches any driver control
+                driver_match = False
+                for field in row['driver_fields']:
+                    driver_text = cmds.textField(field, query=True, text=True).lower()
+                    if search_text in driver_text and driver_text != "missing":
+                        driver_match = True
+                        break
+                
+                # Check actual driver control names in the rig
+                actual_driver_match = False
+                for driver_ctrl in row['original_drivers']:
+                    if driver_ctrl:
+                        driver_display = driver_ctrl.split(':')[-1].split('|')[-1].lower()
+                        if search_text in driver_display:
+                            actual_driver_match = True
+                            break
+                
+                if target_match or driver_match or actual_driver_match:
+                    self._show_row(row)
+                else:
+                    self._hide_row(row)
+    
+    def show_all(self, *args):
+        """Show all rows."""
+        cmds.textField(self.search_field, edit=True, text="")
+        for row in self.mapping_rows:
+            self._show_row(row)
+    
+    def show_missing_only(self, *args):
+        """Show only rows with missing driver controls."""
+        cmds.textField(self.search_field, edit=True, text="")
+        
+        for row in self.mapping_rows:
+            has_missing = False
+            for field in row['driver_fields']:
+                driver_text = cmds.textField(field, query=True, text=True)
+                if driver_text == "MISSING" or not driver_text.strip():
+                    has_missing = True
+                    break
+            
+            if has_missing:
+                self._show_row(row)
+            else:
+                self._hide_row(row)
+    
+    def _show_row(self, row):
+        """Show a mapping row."""
+        if cmds.rowLayout(row['row_layout'], exists=True):
+            cmds.rowLayout(row['row_layout'], edit=True, visible=True, manage=True)
+            row['visible'] = True
+    
+    def _hide_row(self, row):
+        """Hide a mapping row."""
+        if cmds.rowLayout(row['row_layout'], exists=True):
+            cmds.rowLayout(row['row_layout'], edit=True, visible=False, manage=False)
+            row['visible'] = False
+    
+    def add_selection_to_field(self, *args):
+        """Add selected control to the currently focused driver field."""
+        selection = cmds.ls(selection=True)
+        if not selection:
+            cmds.warning("Nothing selected. Please select a control first.")
+            return
+        
+        selected_ctrl = selection[0]
+        ctrl_name = selected_ctrl.split(':')[-1].split('|')[-1]
+        
+        # Try to find which field has focus by checking all text fields
+        focused_field = None
+        focused_row = None
+        focused_driver_index = None
+        
+        for row in self.mapping_rows:
+            for i, field in enumerate(row['driver_fields']):
+                if cmds.textField(field, exists=True):
+                    # Check if this field was recently edited or could accept the control
+                    focused_field = field
+                    focused_row = row
+                    focused_driver_index = i
+                    # Don't break - we want the last one that exists
+        
+        # If we found a field, use the most recently created one or ask user
+        if focused_field:
+            # For now, let's search for the control name in driver lists
+            # and auto-assign to the matching driver if possible
+            assigned = False
+            
+            for row_idx, row in enumerate(self.mapping_rows):
+                target_name = row['target_display']
+                
+                # Check if selected control matches or is similar to target
+                for driver_idx, driver in enumerate(self.connector.drivers):
+                    if selected_ctrl in driver.controls or ctrl_name in [c.split(':')[-1] for c in driver.controls]:
+                        # Found it in this driver's control list
+                        if driver_idx < len(row['driver_fields']):
+                            cmds.textField(row['driver_fields'][driver_idx], edit=True, text=ctrl_name)
+                            print(f"✓ Assigned '{ctrl_name}' to {target_name} -> Driver {driver_idx + 1}")
+                            assigned = True
+                            
+                            # If this matches the target name, we're done
+                            if ctrl_name.lower() == target_name.lower():
+                                cmds.confirmDialog(
+                                    title="Control Added",
+                                    message=f"Added '{ctrl_name}' to matching target control '{target_name}'",
+                                    button=["OK"]
+                                )
+                                return
+            
+            if assigned:
+                cmds.confirmDialog(
+                    title="Control Added",
+                    message=f"Added '{ctrl_name}' to driver field(s)",
+                    button=["OK"]
+                )
+            else:
+                # Control not found in any driver, offer to add manually
+                result = cmds.promptDialog(
+                    title="Add Control",
+                    message=f"Which row should '{ctrl_name}' be added to?\n\nEnter row number (1-{len(self.mapping_rows)}):",
+                    button=["OK", "Cancel"],
+                    defaultButton="OK",
+                    cancelButton="Cancel",
+                    dismissString="Cancel"
+                )
+                
+                if result == "OK":
+                    row_num_text = cmds.promptDialog(query=True, text=True)
+                    try:
+                        row_num = int(row_num_text) - 1
+                        if 0 <= row_num < len(self.mapping_rows):
+                            row = self.mapping_rows[row_num]
+                            
+                            # Ask which driver
+                            driver_result = cmds.promptDialog(
+                                title="Select Driver",
+                                message=f"Which driver field? (1-{len(row['driver_fields'])}):",
+                                button=["OK", "Cancel"],
+                                defaultButton="OK",
+                                cancelButton="Cancel",
+                                dismissString="Cancel"
+                            )
+                            
+                            if driver_result == "OK":
+                                driver_num_text = cmds.promptDialog(query=True, text=True)
+                                driver_num = int(driver_num_text) - 1
+                                if 0 <= driver_num < len(row['driver_fields']):
+                                    cmds.textField(row['driver_fields'][driver_num], edit=True, text=ctrl_name)
+                                    print(f"✓ Manually assigned '{ctrl_name}' to row {row_num + 1}, driver {driver_num + 1}")
+                        else:
+                            cmds.warning(f"Row number out of range: {row_num + 1}")
+                    except ValueError:
+                        cmds.warning("Invalid row number")
+        else:
+            cmds.warning("No driver fields found")
+    
+    def close_window(self, *args):
+        """Close the mapping window."""
+        if cmds.window(self.window_name, exists=True):
+            cmds.deleteUI(self.window_name, window=True)
 
 
 def show_rig_connector():
