@@ -1142,12 +1142,10 @@ class ControlMappingUI:
         cmds.separator(height=10, style="in")
         
         # Search/Filter
-        cmds.rowLayout(numberOfColumns=5, columnWidth5=(100, 400, 150, 150, 150))
+        cmds.rowLayout(numberOfColumns=3, columnWidth3=(100, 650, 150))
         cmds.text(label="Search/Filter:", align="right")
         self.search_field = cmds.textField(changeCommand=self.filter_rows, annotation="Type to filter controls")
-        cmds.button(label="Show All", command=self.show_all)
-        cmds.button(label="Show Missing Only", command=self.show_missing_only, backgroundColor=[0.7, 0.5, 0.3])
-        cmds.button(label="Add to Search", command=self.add_selection_to_search, backgroundColor=[0.4, 0.6, 0.7], annotation="Add selected control name to search field")
+        cmds.button(label="Add Selection to Search", command=self.add_selection_to_search, backgroundColor=[0.4, 0.6, 0.7], annotation="Add selected control name to search field")
         cmds.setParent('..')
         cmds.separator(height=5, style="none")
         
@@ -1176,10 +1174,21 @@ class ControlMappingUI:
         
         # Action buttons
         cmds.separator(height=10, style="in")
-        cmds.rowLayout(numberOfColumns=4, columnWidth4=(245, 245, 245, 245))
+        
+        # Row 1: Auto operations
+        cmds.rowLayout(numberOfColumns=3, columnWidth3=(327, 327, 327))
         cmds.button(label="Auto-Match All", command=self.auto_match_all, backgroundColor=[0.3, 0.6, 0.5])
         cmds.button(label="Clear All", command=self.clear_all, backgroundColor=[0.6, 0.4, 0.3])
-        cmds.button(label="Apply Mapping", command=self.apply_mapping, height=40, backgroundColor=[0.3, 0.7, 0.5])
+        cmds.button(label="Show Missing Only", command=self.show_missing_only, backgroundColor=[0.7, 0.5, 0.3])
+        cmds.setParent('..')
+        
+        cmds.separator(height=5, style="none")
+        
+        # Row 2: File operations and apply
+        cmds.rowLayout(numberOfColumns=4, columnWidth4=(245, 245, 245, 245))
+        cmds.button(label="Save", command=self.save_mapping, backgroundColor=[0.4, 0.5, 0.6])
+        cmds.button(label="Load", command=self.load_mapping, backgroundColor=[0.5, 0.6, 0.7])
+        cmds.button(label="Apply", command=self.apply_mapping, height=40, backgroundColor=[0.3, 0.7, 0.5])
         cmds.button(label="Close", command=self.close_window, backgroundColor=[0.5, 0.5, 0.5])
         cmds.setParent('..')
         
@@ -1211,10 +1220,21 @@ class ControlMappingUI:
             # Driver control fields
             driver_fields = []
             for i, driver_ctrl in enumerate(driver_ctrls):
-                if driver_ctrl and cmds.objExists(driver_ctrl):
-                    driver_display = driver_ctrl.split(':')[-1].split('|')[-1]
-                else:
-                    driver_display = "MISSING"
+                driver_display = "MISSING"
+                
+                if driver_ctrl:
+                    # Check if it exists as-is
+                    if cmds.objExists(driver_ctrl):
+                        driver_display = driver_ctrl.split(':')[-1].split('|')[-1]
+                    else:
+                        # Might be stored as short name, try to find full name
+                        if i < len(self.connector.drivers):
+                            driver = self.connector.drivers[i]
+                            for ctrl in driver.controls:
+                                ctrl_name = ctrl.split(':')[-1].split('|')[-1]
+                                if ctrl_name == driver_ctrl or ctrl == driver_ctrl:
+                                    driver_display = ctrl_name
+                                    break
                 
                 field = cmds.textField(text=driver_display, annotation=f"Driver {i+1} control for {target_display}")
                 driver_fields.append(field)
@@ -1482,11 +1502,11 @@ class ControlMappingUI:
                 # Check if search text matches target control
                 target_match = search_text in row['target_display'].lower()
                 
-                # Check if search text matches any driver control
+                # Check if search text matches any driver control (including mapped ones)
                 driver_match = False
                 for field in row['driver_fields']:
                     driver_text = cmds.textField(field, query=True, text=True).lower()
-                    if search_text in driver_text and driver_text != "missing":
+                    if search_text in driver_text:
                         driver_match = True
                         break
                 
@@ -1636,6 +1656,116 @@ class ControlMappingUI:
                         cmds.warning("Invalid row number")
         else:
             cmds.warning("No driver fields found")
+    
+    def save_mapping(self, *args):
+        """Save control mapping to a JSON file."""
+        filepath = cmds.fileDialog2(
+            fileMode=0,
+            caption="Save Control Mapping",
+            fileFilter="JSON Files (*.json)",
+            defaultExtension="json"
+        )
+        
+        if not filepath:
+            return
+        
+        # Read current mappings from UI
+        mapping_data = {
+            "target_rig": self.connector.target.control_set if self.connector.target else None,
+            "driver_rigs": [d.control_set for d in self.connector.drivers],
+            "mappings": {}
+        }
+        
+        for row in self.mapping_rows:
+            target_ctrl = row['target_ctrl']
+            driver_mappings = []
+            
+            for field in row['driver_fields']:
+                driver_text = cmds.textField(field, query=True, text=True).strip()
+                if driver_text == "MISSING" or driver_text == "":
+                    driver_mappings.append(None)
+                else:
+                    driver_mappings.append(driver_text)
+            
+            mapping_data["mappings"][target_ctrl] = driver_mappings
+        
+        # Save to file
+        try:
+            with open(filepath[0], 'w') as f:
+                json.dump(mapping_data, f, indent=4)
+            
+            print(f"✓ Saved control mapping to: {filepath[0]}")
+            cmds.confirmDialog(
+                title="Success",
+                message=f"Control mapping saved to:\n{filepath[0]}",
+                button=["OK"]
+            )
+        except Exception as e:
+            cmds.warning(f"Failed to save mapping: {e}")
+            print(f"Error saving mapping: {e}")
+    
+    def load_mapping(self, *args):
+        """Load control mapping from a JSON file."""
+        filepath = cmds.fileDialog2(
+            fileMode=1,
+            caption="Load Control Mapping",
+            fileFilter="JSON Files (*.json)"
+        )
+        
+        if not filepath:
+            return
+        
+        try:
+            with open(filepath[0], 'r') as f:
+                mapping_data = json.load(f)
+            
+            # Verify target and driver rigs match
+            if self.connector.target and mapping_data.get("target_rig") != self.connector.target.control_set:
+                result = cmds.confirmDialog(
+                    title="Warning",
+                    message="Target rig doesn't match saved mapping.\n\nContinue loading anyway?",
+                    button=["Yes", "No"],
+                    defaultButton="No",
+                    cancelButton="No"
+                )
+                if result == "No":
+                    return
+            
+            # Load mappings into UI
+            mappings = mapping_data.get("mappings", {})
+            loaded_count = 0
+            
+            for row in self.mapping_rows:
+                target_ctrl = row['target_ctrl']
+                
+                if target_ctrl in mappings:
+                    driver_mappings = mappings[target_ctrl]
+                    
+                    # Fill in driver fields
+                    for i, field in enumerate(row['driver_fields']):
+                        if i < len(driver_mappings):
+                            driver_value = driver_mappings[i]
+                            if driver_value is None or driver_value == "":
+                                cmds.textField(field, edit=True, text="MISSING")
+                            else:
+                                cmds.textField(field, edit=True, text=driver_value)
+                    
+                    loaded_count += 1
+            
+            print(f"✓ Loaded control mapping from: {filepath[0]}")
+            print(f"✓ Loaded {loaded_count} control mappings")
+            
+            cmds.confirmDialog(
+                title="Success",
+                message=f"Loaded {loaded_count} control mappings from:\n{filepath[0]}\n\nClick 'Apply Mapping' to use them.",
+                button=["OK"]
+            )
+            
+        except Exception as e:
+            cmds.warning(f"Failed to load mapping: {e}")
+            print(f"Error loading mapping: {e}")
+            import traceback
+            traceback.print_exc()
     
     def close_window(self, *args):
         """Close the mapping window."""
