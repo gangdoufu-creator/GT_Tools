@@ -125,6 +125,10 @@ class RigConnector:
         for attr in ["tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz", "v"]:
             cmds.setAttr(f"{self.control_locator}.{attr}", lock=True, keyable=False, channelBox=False)
         
+        # Add separator
+        cmds.addAttr(self.control_locator, longName="weights_separator", attributeType="enum", enumName="===WEIGHTS===", keyable=True)
+        cmds.setAttr(f"{self.control_locator}.weights_separator", lock=True)
+        
         # Add weight attributes for each driver
         for i, driver in enumerate(self.drivers):
             attr_name = f"driver_{i+1}_weight"
@@ -138,9 +142,40 @@ class RigConnector:
                 defaultValue=driver.weight
             )
         
+        # Add visibility separator
+        cmds.addAttr(self.control_locator, longName="visibility_separator", attributeType="enum", enumName="===VISIBILITY===", keyable=True)
+        cmds.setAttr(f"{self.control_locator}.visibility_separator", lock=True)
+        
+        # Add visibility toggle for target rig
+        cmds.addAttr(self.control_locator, longName="target_visibility", attributeType="bool", keyable=True, defaultValue=True)
+        
+        # Add visibility toggles for each driver
+        for i, driver in enumerate(self.drivers):
+            attr_name = f"driver_{i+1}_visibility"
+            cmds.addAttr(
+                self.control_locator,
+                longName=attr_name,
+                attributeType="bool",
+                keyable=True,
+                defaultValue=True
+            )
+        
+        # Add global controls separator
+        cmds.addAttr(self.control_locator, longName="global_separator", attributeType="enum", enumName="===GLOBAL===", keyable=True)
+        cmds.setAttr(f"{self.control_locator}.global_separator", lock=True)
+        
         # Add global controls
         cmds.addAttr(self.control_locator, longName="normalize_weights", attributeType="bool", keyable=True, defaultValue=self.normalize_weights)
         cmds.addAttr(self.control_locator, longName="global_enable", attributeType="bool", keyable=True, defaultValue=True)
+        
+        # Store rig connection data as string attributes (for reloading)
+        cmds.addAttr(self.control_locator, longName="target_rig_set", dataType="string")
+        cmds.setAttr(f"{self.control_locator}.target_rig_set", self.target.control_set, type="string")
+        
+        for i, driver in enumerate(self.drivers):
+            attr_name = f"driver_{i+1}_rig_set"
+            cmds.addAttr(self.control_locator, longName=attr_name, dataType="string")
+            cmds.setAttr(f"{self.control_locator}.{attr_name}", driver.control_set, type="string")
         
         print(f"✓ Created blend controller: {self.control_locator}")
     
@@ -186,6 +221,13 @@ class RigConnector:
         
         print(f"✓ Created {len(self.constraint_nodes)} constraints")
         print(f"✓ Created {len(self.blend_nodes)} blend nodes")
+        
+        # Connect visibility toggles to Geometry nodes
+        self._connect_visibility_toggles()
+        
+        # Select target rig top node
+        self._select_target_rig()
+        
         return True
     
     def _create_constraints_for_control(self, target_ctrl, driver_ctrls):
@@ -287,6 +329,63 @@ class RigConnector:
                 return i
         return None
     
+    def _connect_visibility_toggles(self):
+        """Connect visibility attributes to Geometry nodes for each rig."""
+        if not self.control_locator:
+            return
+        
+        # Connect target rig visibility
+        if self.target and self.target.namespace:
+            target_geo = f"{self.target.namespace}:Geometry"
+            if cmds.objExists(target_geo):
+                try:
+                    cmds.connectAttr(
+                        f"{self.control_locator}.target_visibility",
+                        f"{target_geo}.visibility",
+                        force=True
+                    )
+                    print(f"✓ Connected target visibility: {target_geo}")
+                except Exception as e:
+                    print(f"Warning: Could not connect target visibility: {e}")
+        
+        # Connect driver rig visibilities
+        for i, driver in enumerate(self.drivers):
+            if driver.namespace:
+                driver_geo = f"{driver.namespace}:Geometry"
+                if cmds.objExists(driver_geo):
+                    try:
+                        cmds.connectAttr(
+                            f"{self.control_locator}.driver_{i+1}_visibility",
+                            f"{driver_geo}.visibility",
+                            force=True
+                        )
+                        print(f"✓ Connected driver {i+1} visibility: {driver_geo}")
+                    except Exception as e:
+                        print(f"Warning: Could not connect driver {i+1} visibility: {e}")
+    
+    def _select_target_rig(self):
+        """Select the target rig top node after connecting."""
+        if not self.target or not self.target.namespace:
+            return
+        
+        # Try to find and select the top node
+        possible_top_nodes = [
+            f"{self.target.namespace}:Main",
+            f"{self.target.namespace}:Root",
+            f"{self.target.namespace}:Global",
+            f"{self.target.namespace}:Geometry"
+        ]
+        
+        for node in possible_top_nodes:
+            if cmds.objExists(node):
+                cmds.select(node, replace=True)
+                print(f"✓ Selected target rig: {node}")
+                return
+        
+        # If no common top node found, just select the control locator
+        cmds.select(self.control_locator, replace=True)
+        print(f"✓ Selected blend controller: {self.control_locator}")
+    
     def solo_driver(self, index):
         """Solo a driver (set its weight to 1.0, others to 0.0)."""
         if not self.control_locator:
@@ -307,30 +406,96 @@ class RigConnector:
     
     def cleanup(self):
         """Remove all blend connections and nodes."""
-        nodes_to_delete = []
+        print("\n=== Cleaning up rig connector ===")
         
-        # Collect all nodes to delete
+        # First, disconnect all visibility connections to Geometry nodes
         if self.control_locator and cmds.objExists(self.control_locator):
-            nodes_to_delete.append(self.control_locator)
+            # Disconnect target visibility
+            if self.target and self.target.namespace:
+                target_geo = f"{self.target.namespace}:Geometry"
+                if cmds.objExists(target_geo):
+                    try:
+                        connections = cmds.listConnections(f"{target_geo}.visibility", source=True, plugs=True) or []
+                        for conn in connections:
+                            if 'rig_connector_CTRL' in conn:
+                                cmds.disconnectAttr(conn, f"{target_geo}.visibility")
+                                # Restore visibility
+                                cmds.setAttr(f"{target_geo}.visibility", True)
+                                print(f"✓ Restored target visibility: {target_geo}")
+                    except Exception as e:
+                        print(f"Warning: {e}")
+            
+            # Disconnect driver visibilities
+            for i, driver in enumerate(self.drivers):
+                if driver.namespace:
+                    driver_geo = f"{driver.namespace}:Geometry"
+                    if cmds.objExists(driver_geo):
+                        try:
+                            connections = cmds.listConnections(f"{driver_geo}.visibility", source=True, plugs=True) or []
+                            for conn in connections:
+                                if 'rig_connector_CTRL' in conn:
+                                    cmds.disconnectAttr(conn, f"{driver_geo}.visibility")
+                                    # Restore visibility
+                                    cmds.setAttr(f"{driver_geo}.visibility", True)
+                                    print(f"✓ Restored driver {i+1} visibility: {driver_geo}")
+                        except Exception as e:
+                            print(f"Warning: {e}")
         
-        nodes_to_delete.extend(self.constraint_nodes)
-        nodes_to_delete.extend(self.blend_nodes)
+        # Disconnect and delete constraints (this properly removes constraint influence)
+        for constraint in self.constraint_nodes:
+            try:
+                if cmds.objExists(constraint):
+                    # Get the constrained object
+                    constrained = cmds.listConnections(constraint, type='transform', destination=True)
+                    if constrained:
+                        # Delete constraint (Maya automatically removes constraint influence)
+                        cmds.delete(constraint)
+            except Exception as e:
+                print(f"Warning cleaning constraint {constraint}: {e}")
         
-        # Find any remaining rig_connector nodes
+        # Disconnect and delete blend nodes
+        for blend_node in self.blend_nodes:
+            try:
+                if cmds.objExists(blend_node):
+                    # Get output connections
+                    outputs = cmds.listConnections(blend_node, source=False, plugs=True) or []
+                    # Disconnect outputs first
+                    for output in outputs:
+                        input_plug = cmds.listConnections(output, source=True, plugs=True, destination=False)
+                        if input_plug:
+                            cmds.disconnectAttr(input_plug[0], output)
+                    # Now delete the node
+                    cmds.delete(blend_node)
+            except Exception as e:
+                print(f"Warning cleaning blend node {blend_node}: {e}")
+        
+        # Delete control locator
+        if self.control_locator and cmds.objExists(self.control_locator):
+            try:
+                cmds.delete(self.control_locator)
+            except Exception as e:
+                print(f"Warning deleting control locator: {e}")
+        
+        # Find and clean any remaining rig_connector nodes
         all_nodes = cmds.ls()
+        remaining = []
         for node in all_nodes:
             if 'rig_connector' in node and cmds.objExists(node):
-                nodes_to_delete.append(node)
-        
-        # Delete all collected nodes
-        for node in set(nodes_to_delete):
-            try:
-                if cmds.objExists(node):
+                try:
                     cmds.delete(node)
-            except:
-                pass
+                    remaining.append(node)
+                except:
+                    pass
         
-        print(f"✓ Cleaned up {len(set(nodes_to_delete))} nodes")
+        if remaining:
+            print(f"✓ Cleaned up {len(remaining)} remaining nodes")
+        
+        # Clear tracking lists
+        self.constraint_nodes = []
+        self.blend_nodes = []
+        self.control_locator = None
+        
+        print("✓ Cleanup complete")
     
     def bake_and_cleanup(self, bake_set=None):
         """Bake animation to target rig and cleanup blend system."""
@@ -507,8 +672,12 @@ class RigConnectorUI:
         self.add_driver_row()
         self.add_driver_row()
         
-        # Auto-populate from current selection
-        self.populate_from_selection()
+        # Check if rig_connector_CTRL exists and load from it
+        if cmds.objExists("rig_connector_CTRL"):
+            self.load_from_controller()
+        else:
+            # Auto-populate from current selection
+            self.populate_from_selection()
         
         cmds.showWindow(self.window)
     
@@ -682,6 +851,15 @@ class RigConnectorUI:
     
     def bake_and_cleanup(self, *args):
         """Bake animation and cleanup."""
+        # If connector doesn't have target, try to load from UI/controller
+        if not self.connector.target:
+            target_set = cmds.textField(self.target_field, query=True, text=True)
+            if target_set and cmds.objExists(target_set):
+                self.connector.set_target(target_set)
+            else:
+                cmds.warning("No target rig set. Please set a target rig first.")
+                return
+        
         self.connector.bake_and_cleanup()
         cmds.confirmDialog(title="Success", message="Baked and cleaned up!", button=["OK"])
     
@@ -712,6 +890,60 @@ class RigConnectorUI:
                 # Update UI with loaded data
                 if self.connector.target:
                     cmds.textField(self.target_field, edit=True, text=self.connector.target.control_set)
+    
+    def load_from_controller(self):
+        """Load rig sets from existing rig_connector_CTRL."""
+        try:
+            ctrl = "rig_connector_CTRL"
+            if not cmds.objExists(ctrl):
+                return
+            
+            print("Loading from existing rig_connector_CTRL...")
+            
+            # Load target rig
+            if cmds.attributeQuery("target_rig_set", node=ctrl, exists=True):
+                target_set = cmds.getAttr(f"{ctrl}.target_rig_set")
+                if target_set and cmds.objExists(target_set):
+                    cmds.textField(self.target_field, edit=True, text=target_set)
+                    print(f"Loaded target: {target_set}")
+            
+            # Load driver rigs
+            driver_index = 1
+            while True:
+                attr_name = f"driver_{driver_index}_rig_set"
+                if cmds.attributeQuery(attr_name, node=ctrl, exists=True):
+                    driver_set = cmds.getAttr(f"{ctrl}.{attr_name}")
+                    if driver_set and cmds.objExists(driver_set):
+                        # Ensure we have enough driver rows
+                        while len(self.driver_ui_rows) < driver_index:
+                            self.add_driver_row()
+                        
+                        # Set the driver field
+                        if driver_index - 1 < len(self.driver_ui_rows):
+                            cmds.textField(self.driver_ui_rows[driver_index - 1]['set_field'], edit=True, text=driver_set)
+                            
+                            # Load weight value
+                            weight_attr = f"driver_{driver_index}_weight"
+                            if cmds.attributeQuery(weight_attr, node=ctrl, exists=True):
+                                weight = cmds.getAttr(f"{ctrl}.{weight_attr}")
+                                cmds.floatSliderGrp(self.driver_ui_rows[driver_index - 1]['weight_slider'], edit=True, value=weight)
+                            
+                            print(f"Loaded driver {driver_index}: {driver_set}")
+                    driver_index += 1
+                else:
+                    break
+            
+            # Load options
+            if cmds.attributeQuery("normalize_weights", node=ctrl, exists=True):
+                normalize = cmds.getAttr(f"{ctrl}.normalize_weights")
+                cmds.checkBox(self.normalize_cb, edit=True, value=normalize)
+            
+            print("✓ Loaded configuration from rig_connector_CTRL")
+            
+        except Exception as e:
+            print(f"Error loading from controller: {e}")
+            import traceback
+            traceback.print_exc()
     
     def populate_from_selection(self):
         """Populate fields from current selection when UI launches."""
