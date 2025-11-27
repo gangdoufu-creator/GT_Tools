@@ -122,13 +122,16 @@ and bake "from locators" to re-apply your animation.''') as win:
                        annotation='Create constraint to locator parented to last selected object (no animation baking).')
         mc.checkBoxGrp('ml_worldBake_setToZero_checkBox',label='Set Locator to Zero',
                        annotation='Set the locator transforms to zero after creation.')
+        mc.checkBoxGrp('ml_worldBake_maintainOffset_checkBox',label='Maintain Offset',
+                       annotation='Maintain the offset between the locator and the first object when applying constraints.')
 
         win.ButtonWithPopup(label='Bake Selection To Locators', command=toLocators, annotation='Bake selected object to locators specified space.',
             readUI_toArgs={'bakeOnOnes':'ml_worldBake_bakeOnOnes_checkBox',
                            'spaceInt':'ml_worldBake_space_radioButton',
                            'constrainSource':'ml_worldBake_constrain_checkBox',
                            'currentFrameOnly':'ml_worldBake_currentFrameOnly_checkBox',
-                           'setToZero':'ml_worldBake_setToZero_checkBox'},
+                           'setToZero':'ml_worldBake_setToZero_checkBox',
+                           'maintainOffset':'ml_worldBake_maintainOffset_checkBox'},
             name=win.name)
         mc.setParent('..')
 
@@ -156,7 +159,7 @@ and bake "from locators" to re-apply your animation.''') as win:
     print("Debug: UI launched successfully.")
 
 
-def currentFrameConstraint(firstObj, parent, setToZero=False):
+def currentFrameConstraint(firstObj, parent, setToZero=False, maintainOffset=True):
     '''
     Creates a locator parented to the last selected object (parent),
     positioned at the current location of the first selected object.
@@ -167,13 +170,14 @@ def currentFrameConstraint(firstObj, parent, setToZero=False):
         firstObj (str): The first selected object to constrain.
         parent (str): The second selected object to parent the locator to.
         setToZero (bool): If True, sets the locator's transforms to zero after creation.
+        maintainOffset (bool): If True, maintains the offset between the locator and the first object.
     '''
     if not firstObj or not parent:
         OpenMaya.MGlobal.displayWarning('Error: invalid objects.')
         return
 
     # Debug: Print selected objects
-    print(f"Debug: First object: {firstObj}, Parent: {parent}, Set to Zero: {setToZero}")
+    print(f"Debug: First object: {firstObj}, Parent: {parent}, Set to Zero: {setToZero}, Maintain Offset: {maintainOffset}")
 
     name = mc.ls(firstObj, shortNames=True)[0]
     if ':' in name:
@@ -182,6 +186,23 @@ def currentFrameConstraint(firstObj, parent, setToZero=False):
     # Create locator in world space
     locator = mc.spaceLocator(name='worldBake_'+name+'_#')[0]
     mc.setAttr(locator+'.rotateOrder', 3)
+
+    # Add custom attributes to the locator
+    if not mc.attributeQuery('ml_bakeSource', node=locator, exists=True):
+        mc.addAttr(locator, longName='ml_bakeSource', attributeType='message')
+        print(f"Debug: Added 'ml_bakeSource' attribute to {locator}.")
+
+    if not mc.attributeQuery('ml_bakeSourceName', node=locator, exists=True):
+        mc.addAttr(locator, longName='ml_bakeSourceName', dataType='string')
+        mc.setAttr(locator+'.ml_bakeSourceName', name, type='string')
+        print(f"Debug: Added 'ml_bakeSourceName' attribute to {locator}.")
+
+    # Connect the locator to the source object
+    try:
+        mc.connectAttr(f"{firstObj}.message", f"{locator}.ml_bakeSource")
+        print(f"Debug: Connected {firstObj}.message to {locator}.ml_bakeSource.")
+    except RuntimeError as e:
+        print(f"Debug: Failed to connect {firstObj}.message to {locator}.ml_bakeSource: {e}")
 
     # Debug: Print locator creation
     print(f"Debug: Locator created: {locator}")
@@ -198,6 +219,10 @@ def currentFrameConstraint(firstObj, parent, setToZero=False):
     # Debug: Print locator parenting
     print(f"Debug: Locator {locator} parented to {parent}")
 
+    # Finalize locator position before applying constraints
+    mc.makeIdentity(locator, apply=True, translate=True, rotate=True, scale=False)
+    print(f"Debug: Locator transforms finalized.")
+
     # Constrain first object to the locator, handling locked attributes
     try:
         # Check for unlocked translation and rotation attributes
@@ -208,13 +233,13 @@ def currentFrameConstraint(firstObj, parent, setToZero=False):
 
         # Apply pointConstraint for translation if any translation attributes are unlocked
         if unlocked_translate:
-            mc.pointConstraint(locator, firstObj, maintainOffset=True)
-            print(f"Debug: Applied pointConstraint for {unlocked_translate}")
+            mc.pointConstraint(locator, firstObj, maintainOffset=maintainOffset)
+            print(f"Debug: Applied pointConstraint for {unlocked_translate} with maintainOffset={maintainOffset}")
 
         # Apply orientConstraint for rotation if any rotation attributes are unlocked
         if unlocked_rotate:
-            mc.orientConstraint(locator, firstObj, maintainOffset=True)
-            print(f"Debug: Applied orientConstraint for {unlocked_rotate}")
+            mc.orientConstraint(locator, firstObj, maintainOffset=maintainOffset)
+            print(f"Debug: Applied orientConstraint for {unlocked_rotate} with maintainOffset={maintainOffset}")
 
     except RuntimeError as e:
         OpenMaya.MGlobal.displayWarning(f"Constraint failed: {e}")
@@ -223,21 +248,13 @@ def currentFrameConstraint(firstObj, parent, setToZero=False):
     if setToZero:
         mc.setAttr(locator + '.translate', 0, 0, 0)
         mc.setAttr(locator + '.rotate', 0, 0, 0)
-        print(f"Debug: Locator {locator} transforms set to zero.")
+        print(f"Debug: Locator transforms set to zero.")
 
-    # Debug: Print constraint application
-    print(f"Debug: {firstObj} constrained to {locator}")
-
-    # Delete animation keys on the first object
-    mc.cutKey(firstObj)
-
-    # Debug: Print key deletion
-    print(f"Debug: Animation keys deleted for {firstObj}")
-
-    mc.select(locator)
+    # Debug: Completed constraint setup
+    print(f"Debug: Completed constraint setup for {firstObj} with locator {locator}.")
 
 
-def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=False, currentFrameOnly=False, setToZero=False):
+def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=False, currentFrameOnly=False, setToZero=False, maintainOffset=True):
     '''
     Creates locators, and bakes their position to selection.
     Creates connections to the source objects, so they can
@@ -253,10 +270,11 @@ def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=F
         constrainSource (bool): Whether to constrain the source object.
         currentFrameOnly (bool): Whether to use the "Current Frame Only" mode.
         setToZero (bool): Whether to set the locator's transforms to zero after creation.
+        maintainOffset (bool): Whether to maintain the offset when applying constraints.
     '''
 
     # Debug: Print function arguments
-    print(f"Debug: toLocators called with bakeOnOnes={bakeOnOnes}, space={space}, spaceInt={spaceInt}, constrainSource={constrainSource}, currentFrameOnly={currentFrameOnly}, setToZero={setToZero}")
+    print(f"Debug: toLocators called with bakeOnOnes={bakeOnOnes}, space={space}, spaceInt={spaceInt}, constrainSource={constrainSource}, currentFrameOnly={currentFrameOnly}, setToZero={setToZero}, maintainOffset={maintainOffset}")
 
     if spaceInt and 0 <= spaceInt <= 2:
         space = ['world', 'camera', 'last'][spaceInt]
@@ -278,21 +296,22 @@ def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=F
             OpenMaya.MGlobal.displayWarning('Select objects, with the parent as the last selection.')
             return
         print("Debug: Calling currentFrameConstraint")
-        currentFrameConstraint(sel[0], parent, setToZero=setToZero)
+        currentFrameConstraint(sel[0], parent, setToZero=setToZero, maintainOffset=maintainOffset)
     else:
         # Normal baking mode
         mc.select(sel)
         matchBakeLocators(parent=parent, bakeOnOnes=bakeOnOnes, constrainSource=constrainSource)
 
 
-def fromLocators(bakeOnOnes=False):
+def fromLocators(bakeOnOnes=False, maintainOffset=True):
     '''
     Traces connections from selected locators to their source nodes, and
     bakes their position back.
     Arguments:
         bakeOnOnes :: Bool :: Preserve the original keytimes from the locator.
+        maintainOffset :: Bool :: Maintain the offset between the locator and the source object.
     '''
-    #get neccesary nodes
+    # Get necessary nodes
     objs = mc.ls(sl=True)
     if not objs:
         OpenMaya.MGlobal.displayWarning('Select a previously baked locator.')
@@ -303,32 +322,45 @@ def fromLocators(bakeOnOnes=False):
 
     for src in objs:
         try:
-            dest = mc.listConnections(src+'.ml_bakeSource',destination=False)[0]
-            if dest:
-                source.append(src)
-                destination.append(dest)
+            # Debug: Check if the locator has the required attributes
+            if not mc.attributeQuery('ml_bakeSource', node=src, exists=True):
+                print(f"Debug: Locator {src} does not have the 'ml_bakeSource' attribute.")
+                continue
 
-        except Exception:
-            pass
+            # Debug: Check connections to the original object
+            dest = mc.listConnections(src+'.ml_bakeSource', destination=False)
+            if not dest:
+                print(f"Debug: No connections found for locator {src}. Ensure it was created by the script.")
+                continue
+
+            dest = dest[0]
+            source.append(src)
+            destination.append(dest)
+
+            print(f"Debug: Locator {src} is connected to {dest}.")
+
+        except Exception as e:
+            print(f"Debug: Error processing locator {src}: {e}")
 
     if not destination:
         OpenMaya.MGlobal.displayWarning('Select a previously baked locator.')
         return
 
-    #delete constraints on destination nodes
-    for each in destination:
-        constraints = mc.listConnections(each, source=True, destination=False, type='constraint')
-        if constraints:
-            try:
-                mc.delete(constraints)
-            except Exception:
-                pass
+    # Delegate baking to utl.matchBake
+    try:
+        print(f"Debug: Delegating baking to utl.matchBake with bakeOnOnes={bakeOnOnes} and maintainOffset={maintainOffset}.")
+        utl.matchBake(source=source, destination=destination, bakeOnOnes=bakeOnOnes, maintainOffset=maintainOffset)
+        print("Debug: Baking completed successfully.")
+    except Exception as e:
+        print(f"Debug: Error during baking: {e}")
 
-    utl.matchBake(source, destination, bakeOnOnes=bakeOnOnes)
-
+    # Delete locators after baking
     for each in source:
-        mc.delete(each)
-
+        try:
+            mc.delete(each)
+            print(f"Debug: Deleted locator {each}.")
+        except Exception as e:
+            print(f"Debug: Error deleting locator {each}: {e}")
 
 def matchBakeLocators(parent=None, bakeOnOnes=False, constrainSource=False):
 

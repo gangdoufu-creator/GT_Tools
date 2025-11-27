@@ -106,6 +106,10 @@ class CycleMakerUI:
         self.time_offset_copy_field = None
         self.value_offset_copy_field = None
         
+        # L/R Cycle Maker offset fields
+        self.lr_time_offset_field = None
+        self.lr_value_offset_field = None
+        
         # Settings/Preferences
         self.forward_direction = 'Z'  # Default forward direction (X, Y, or Z)
         self.forward_rotation_axis = 'X'  # Default spine rotation axis (X, Y, or Z)
@@ -234,6 +238,24 @@ class CycleMakerUI:
         # Control pairs will be added here dynamically
         cmds.setParent('..')  # columnLayout
         cmds.setParent('..')  # scrollLayout
+        
+        cmds.setParent('..')  # columnLayout
+        cmds.setParent('..')  # frameLayout
+        
+        cmds.separator(height=12, style="in")
+        
+        # Time and Value Offset controls
+        cmds.frameLayout(label="Animation Offset Settings", collapsable=False,
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.38, 0.45, 0.46))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+        
+        cmds.rowLayout(numberOfColumns=4, columnWidth4=(100, 100, 100, 100))
+        cmds.text(label="Time Offset:", align="right")
+        self.lr_time_offset_field = cmds.intField(value=0, annotation="Frame offset for copied animation")
+        cmds.text(label="Value Offset:", align="right")
+        self.lr_value_offset_field = cmds.floatField(value=0.0, precision=2, annotation="Value offset for copied animation")
+        cmds.setParent('..')
         
         cmds.setParent('..')  # columnLayout
         cmds.setParent('..')  # frameLayout
@@ -454,9 +476,9 @@ class CycleMakerUI:
         # Bulk editing controls positioned below headers
         cmds.rowLayout(numberOfColumns=4, columnWidth4=(120, 60, 60, 240), height=22)
         cmds.text(label="", width=120)  # Empty space above Object
-        cmds.intField(value=1, width=55, annotation="Set this time offset for all objects",
+        self.time_offset_copy_field = cmds.intField(value=1, width=55, annotation="Set this time offset for all objects",
                      changeCommand=self._set_all_copy_time_offsets)
-        cmds.floatField(value=0.0, width=55, precision=2, annotation="Set this value offset for all objects",
+        self.value_offset_copy_field = cmds.floatField(value=0.0, width=55, precision=2, annotation="Set this value offset for all objects",
                        changeCommand=self._set_all_copy_value_offsets)
         # Bulk checkboxes for channels
         cmds.rowLayout(numberOfColumns=6, columnWidth6=(35, 35, 35, 35, 35, 70))
@@ -4723,50 +4745,76 @@ class CycleMakerUI:
 
             
     def copy_with_direction(self, *_):
-        """Copy animation based on current selection - left controls copy to right, right controls copy to left."""
+        """Copy animation from selected controls to their opposite side."""
         try:
             # Get current selection
             selected_objects = cmds.ls(selection=True, type='transform')
             
             if not selected_objects:
-                # No selection - default to left to right
-                print("No objects selected. Defaulting to left-to-right copy.")
-                self.copy_left_to_right()
+                cmds.warning("No objects selected. Please select controls to copy from.")
                 return
             
-            # Analyze selection to determine direction
-            left_selected = 0
-            right_selected = 0
+            # Get offset values from the UI
+            time_offset = cmds.intField(self.lr_time_offset_field, query=True, value=True) if self.lr_time_offset_field else 0
+            value_offset = cmds.floatField(self.lr_value_offset_field, query=True, value=True) if self.lr_value_offset_field else 0.0
             
-            for obj in selected_objects:
-                if obj in self.left_controls:
-                    left_selected += 1
-                elif obj in self.right_controls:
-                    right_selected += 1
-                else:
-                    # Check if it's a left or right control by name patterns
-                    if self.is_left(obj):
-                        left_selected += 1
-                    elif self.is_right(obj):
-                        right_selected += 1
+            print(f"\n{'='*60}")
+            print(f"Copying from selection to opposite side")
+            print(f"Time Offset: {time_offset} frames")
+            print(f"Value Offset: {value_offset}")
+            print(f"{'='*60}")
             
-            # Determine direction based on selection
-            if left_selected > right_selected:
-                print(f"Left controls selected ({left_selected}). Copying left to right.")
-                self.copy_left_to_right()
-            elif right_selected > left_selected:
-                print(f"Right controls selected ({right_selected}). Copying right to left.")
-                self.copy_right_to_left()
-            elif left_selected == right_selected and left_selected > 0:
-                print(f"Equal left/right selection ({left_selected} each). Defaulting to left-to-right copy.")
-                self.copy_left_to_right()
-            else:
-                # No recognizable left/right controls - default to left to right
-                print("No recognizable left/right controls in selection. Defaulting to left-to-right copy.")
-                self.copy_left_to_right()
+            copied_count = 0
+            skipped_count = 0
+            
+            # Process each selected object
+            for source_ctrl in selected_objects:
+                # Find if this control is in our paired list
+                source_index = -1
+                target_ctrl = None
                 
+                if source_ctrl in self.left_controls:
+                    source_index = self.left_controls.index(source_ctrl)
+                    target_ctrl = self.right_controls[source_index]
+                elif source_ctrl in self.right_controls:
+                    source_index = self.right_controls.index(source_ctrl)
+                    target_ctrl = self.left_controls[source_index]
+                else:
+                    # Try to find opposite by name pattern
+                    if self.is_left(source_ctrl):
+                        target_ctrl = self.get_other_side(source_ctrl, left_to_right=True)
+                    elif self.is_right(source_ctrl):
+                        target_ctrl = self.get_other_side(source_ctrl, left_to_right=False)
+                    else:
+                        print(f"⚠ Skipped {source_ctrl} - not a left/right control")
+                        skipped_count += 1
+                        continue
+                
+                if not target_ctrl or not cmds.objExists(target_ctrl):
+                    print(f"⚠ Skipped {source_ctrl} - opposite control not found")
+                    skipped_count += 1
+                    continue
+                
+                # Get inversion settings for this pair
+                inversion = {}
+                if source_index >= 0 and source_index < len(self.control_inversions):
+                    inversion = self.control_inversions[source_index]
+                
+                # Copy animation with offset using existing function
+                print(f"Copying: {source_ctrl} → {target_ctrl}")
+                self._copy_with_per_control_settings(source_ctrl, target_ctrl, time_offset, inversion)
+                copied_count += 1
+            
+            print(f"\n{'='*60}")
+            print(f"✓ Copied {copied_count} controls")
+            if skipped_count > 0:
+                print(f"⚠ Skipped {skipped_count} controls")
+            print(f"{'='*60}\n")
+            
         except Exception as e:
             cmds.warning(f"Copy with direction failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def contain_curve_within_time_range(self, curve_attr):
         """

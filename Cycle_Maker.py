@@ -1,4 +1,5 @@
 import maya.cmds as cmds
+import maya.mel as mel
 import re
 
 class CycleMakerUI:
@@ -105,6 +106,10 @@ class CycleMakerUI:
         self.time_offset_copy_field = None
         self.value_offset_copy_field = None
         
+        # L/R Cycle Maker offset fields
+        self.lr_time_offset_field = None
+        self.lr_value_offset_field = None
+        
         # Settings/Preferences
         self.forward_direction = 'Z'  # Default forward direction (X, Y, or Z)
         self.forward_rotation_axis = 'X'  # Default spine rotation axis (X, Y, or Z)
@@ -140,8 +145,12 @@ class CycleMakerUI:
         tab2 = cmds.columnLayout(adjustableColumn=True, parent=main_tabs)
         self.setup_copy_offset_tab()
         
+        # TAB 3: IK/FK Switcher
+        tab3 = cmds.columnLayout(adjustableColumn=True, parent=main_tabs)
+        self.setup_ik_fk_switcher_tab()
+        
         # Set tab labels
-        cmds.tabLayout(main_tabs, edit=True, tabLabel=((tab1, 'Cycle Maker'), (tab2, 'Copy with Offset')))
+        cmds.tabLayout(main_tabs, edit=True, tabLabel=((tab1, 'Cycle Maker'), (tab2, 'Copy with Offset'), (tab3, 'IK/FK Switcher')))
         
         cmds.showWindow(self.window)
     
@@ -234,6 +243,31 @@ class CycleMakerUI:
         cmds.setParent('..')  # frameLayout
         
         cmds.separator(height=12, style="in")
+        
+        # Time and Value Offset controls
+        cmds.frameLayout(label="Animation Offset Settings", collapsable=False,
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.38, 0.45, 0.46))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+        
+        cmds.rowLayout(numberOfColumns=4, columnWidth4=(100, 100, 100, 100))
+        cmds.text(label="Time Offset:", align="right")
+        self.lr_time_offset_field = cmds.intField(value=0, annotation="Frame offset for copied animation")
+        cmds.text(label="Value Offset:", align="right")
+        self.lr_value_offset_field = cmds.floatField(value=0.0, precision=2, annotation="Value offset for copied animation")
+        cmds.setParent('..')
+        
+        cmds.setParent('..')  # columnLayout
+        cmds.setParent('..')  # frameLayout
+        
+        cmds.separator(height=12, style="in")
+        # Current Frame Only checkbox
+        self.mirror_current_frame_only = cmds.checkBox(
+            label="Mirror Current Frame Only", 
+            value=False,
+            annotation="When enabled, only mirror animation at the current frame instead of the entire timeline"
+        )
+        cmds.separator(height=8, style="none")
         # Add Selected and Copy buttons on one line
         cmds.rowLayout(numberOfColumns=2, columnWidth2=(200, 200), adjustableColumn=1,
                       columnAttach=[(1, 'both', 2), (2, 'both', 2)])
@@ -449,9 +483,9 @@ class CycleMakerUI:
         # Bulk editing controls positioned below headers
         cmds.rowLayout(numberOfColumns=4, columnWidth4=(120, 60, 60, 240), height=22)
         cmds.text(label="", width=120)  # Empty space above Object
-        cmds.intField(value=1, width=55, annotation="Set this time offset for all objects",
+        self.time_offset_copy_field = cmds.intField(value=1, width=55, annotation="Set this time offset for all objects",
                      changeCommand=self._set_all_copy_time_offsets)
-        cmds.floatField(value=0.0, width=55, precision=2, annotation="Set this value offset for all objects",
+        self.value_offset_copy_field = cmds.floatField(value=0.0, width=55, precision=2, annotation="Set this value offset for all objects",
                        changeCommand=self._set_all_copy_value_offsets)
         # Bulk checkboxes for channels
         cmds.rowLayout(numberOfColumns=6, columnWidth6=(35, 35, 35, 35, 35, 70))
@@ -494,9 +528,355 @@ class CycleMakerUI:
         
         cmds.separator(height=15, style="in")
         
+        # Animation Layer option
+        cmds.frameLayout(label="Animation Layer Options", collapsable=False,
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.45, 0.42, 0.48))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+        
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(200, 200), adjustableColumn=2)
+        self.copy_to_layer_checkbox = cmds.checkBox(label="Copy to New Animation Layer", 
+                                                     value=False,
+                                                     changeCommand=self._toggle_layer_name_field,
+                                                     annotation="Create a new animation layer for the offset animation")
+        cmds.setParent('..')
+        
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(100, 300), adjustableColumn=2)
+        cmds.text(label="Layer Name:", align="right", enable=False)
+        self.layer_name_field = cmds.textField(text="OffsetLayer", enable=False,
+                                               annotation="Name for the new animation layer")
+        cmds.setParent('..')
+        
+        cmds.setParent('..')
+        cmds.setParent('..')
+        
+        cmds.separator(height=15, style="in")
+        
         # Copy button with improved styling
         cmds.button(label="Copy with Offset", command=self.copy_with_offset, height=35, 
                    backgroundColor=(0.42, 0.48, 0.42))  # Consistent muted green
+
+    def setup_ik_fk_switcher_tab(self):
+        """Setup the IK/FK Switcher functionality tab."""
+        cmds.scrollLayout(horizontalScrollBarThickness=0, verticalScrollBarThickness=10)
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=10, columnOffset=("both", 10))
+        
+        # Title
+        cmds.text(label="Dragon Rig IK/FK Switcher", align="center", font="boldLabelFont", height=30)
+        cmds.separator(style="in", height=10)
+        
+        # Instructions
+        cmds.frameLayout(label="Instructions", collapsable=True, collapse=False, 
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.45, 0.42, 0.38))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
+        cmds.text(label="1. Select an IK or FK control (L or R)", align="left")
+        cmds.text(label="2. Set your timeline range", align="left")
+        cmds.text(label="3. Click the appropriate button below", align="left")
+        cmds.text(label="", height=5)
+        cmds.text(label="The tool will automatically detect the side and", align="left", font="smallPlainLabelFont")
+        cmds.text(label="bake animation across the entire timeline.", align="left", font="smallPlainLabelFont")
+        cmds.setParent('..')
+        cmds.setParent('..')
+        
+        cmds.separator(style="in", height=10)
+        
+        # Control naming reference
+        cmds.frameLayout(label="Rig Controls (Reference)", collapsable=True, collapse=True,
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.42, 0.45, 0.48))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=3)
+        cmds.text(label="IK Controls:", font="boldLabelFont", align="left")
+        cmds.text(label="  • IK Handle: IKLeg_L / IKLeg_R", align="left", font="smallPlainLabelFont")
+        cmds.text(label="  • Pole Vector: PoleLeg_L / PoleLeg_R", align="left", font="smallPlainLabelFont")
+        cmds.text(label="  • Switch: FKIKLeg_L/R.FKIKBlend (0=FK, 10=IK)", align="left", font="smallPlainLabelFont")
+        cmds.separator(height=5)
+        cmds.text(label="FK Controls:", font="boldLabelFont", align="left")
+        cmds.text(label="  • FKHip_L/R, FKKnee_L/R, FKKnee1_L/R", align="left", font="smallPlainLabelFont")
+        cmds.text(label="  • FKAnkle_L/R, FKToes_L/R", align="left", font="smallPlainLabelFont")
+        cmds.setParent('..')
+        cmds.setParent('..')
+        
+        cmds.separator(style="in", height=10)
+        
+        # Timeline range display
+        start = cmds.playbackOptions(query=True, minTime=True)
+        end = cmds.playbackOptions(query=True, maxTime=True)
+        cmds.text(label=f"Current Timeline: {int(start)} to {int(end)} frames", 
+                 align="center", font="boldLabelFont",
+                 backgroundColor=(0.3, 0.3, 0.3))
+        
+        cmds.separator(style="in", height=15)
+        
+        # Switch buttons
+        cmds.frameLayout(label="Switching Operations", collapsable=False,
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.45, 0.42, 0.38))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=10)
+        
+        cmds.button(
+            label="IK → FK (Bake to FK Controls)",
+            command=lambda _: self.execute_ik_fk_switch("ik_to_fk"),
+            height=45,
+            backgroundColor=[0.3, 0.5, 0.8],
+            annotation="Switch from IK animation to FK. Bakes IK poses to FK controls across timeline."
+        )
+        
+        cmds.button(
+            label="FK → IK (Bake to IK Controls)",
+            command=lambda _: self.execute_ik_fk_switch("fk_to_ik"),
+            height=45,
+            backgroundColor=[0.5, 0.3, 0.8],
+            annotation="Switch from FK animation to IK. Bakes FK poses to IK controls across timeline."
+        )
+        
+        cmds.setParent('..')
+        cmds.setParent('..')
+        
+        cmds.separator(style="in", height=15)
+        
+        # Status/Help text
+        cmds.frameLayout(label="Tips", collapsable=True, collapse=False,
+                        marginHeight=8, marginWidth=8, borderVisible=True,
+                        backgroundColor=(0.42, 0.48, 0.42))
+        cmds.columnLayout(adjustableColumn=True, rowSpacing=3)
+        cmds.text(label="• Make sure your timeline is set correctly before switching", 
+                 align="left", font="smallPlainLabelFont")
+        cmds.text(label="• The tool preserves all animation keys by default", 
+                 align="left", font="smallPlainLabelFont")
+        cmds.text(label="• Undo (Ctrl+Z) works if you need to revert", 
+                 align="left", font="smallPlainLabelFont")
+        cmds.text(label="• You can switch back and forth as needed", 
+                 align="left", font="smallPlainLabelFont")
+        cmds.setParent('..')
+        cmds.setParent('..')
+        
+        cmds.setParent('..')  # columnLayout
+        cmds.setParent('..')  # scrollLayout
+
+    def execute_ik_fk_switch(self, direction):
+        """Execute IK/FK switch using the integrated switcher logic."""
+        # Import the switcher functionality
+        try:
+            # Detect side from selection
+            selection = cmds.ls(selection=True)
+            if not selection:
+                cmds.warning("Nothing selected. Please select an IK or FK control.")
+                return
+            
+            side = None
+            for obj in selection:
+                if '_L' in obj:
+                    side = 'L'
+                    break
+                elif '_R' in obj:
+                    side = 'R'
+                    break
+            
+            if not side:
+                cmds.warning("Could not detect side from selection. Please select a control with _L or _R suffix.")
+                return
+            
+            # Get time range
+            start = cmds.playbackOptions(query=True, minTime=True)
+            end = cmds.playbackOptions(query=True, maxTime=True)
+            
+            # Confirm with user
+            if direction == "ik_to_fk":
+                result = cmds.confirmDialog(
+                    title="Confirm IK to FK Switch",
+                    message=f"Switch IK to FK for {side} side?\nFrames: {int(start)} to {int(end)}\n\nThis will bake animation to FK controls.",
+                    button=["Yes", "Cancel"],
+                    defaultButton="Yes",
+                    cancelButton="Cancel",
+                    dismissString="Cancel"
+                )
+                if result == "Yes":
+                    self.switch_ik_to_fk_integrated(side, start, end)
+            
+            elif direction == "fk_to_ik":
+                result = cmds.confirmDialog(
+                    title="Confirm FK to IK Switch",
+                    message=f"Switch FK to IK for {side} side?\nFrames: {int(start)} to {int(end)}\n\nThis will bake animation to IK controls.",
+                    button=["Yes", "Cancel"],
+                    defaultButton="Yes",
+                    cancelButton="Cancel",
+                    dismissString="Cancel"
+                )
+                if result == "Yes":
+                    self.switch_fk_to_ik_integrated(side, start, end)
+                    
+        except Exception as e:
+            cmds.error(f"Error during IK/FK switch: {e}")
+
+    def switch_ik_to_fk_integrated(self, side, start, end):
+        """Switch from IK to FK - integrated into Cycle Maker."""
+        # Control definitions
+        ik_controls = {
+            'L': {'ik_handle': 'IKLeg_L', 'pole_vector': 'PoleLeg_L', 'switch_attr': 'FKIKLeg_L.FKIKBlend'},
+            'R': {'ik_handle': 'IKLeg_R', 'pole_vector': 'PoleLeg_R', 'switch_attr': 'FKIKLeg_R.FKIKBlend'}
+        }
+        fk_controls = {
+            'L': ['FKHip_L', 'FKKnee_L', 'FKKnee1_L', 'FKAnkle_L', 'FKToes_L'],
+            'R': ['FKHip_R', 'FKKnee_R', 'FKKnee1_R', 'FKAnkle_R', 'FKToes_R']
+        }
+        joints = {
+            'L': ['Hip_L', 'Knee_L', 'Knee1_L', 'Ankle_L'],
+            'R': ['Hip_R', 'Knee_R', 'Knee1_R', 'Ankle_R']
+        }
+        
+        fk_ctrls = fk_controls[side]
+        jnts = joints[side]
+        switch_attr = ik_controls[side]['switch_attr']
+        
+        # Check if controls exist
+        missing = [ctrl for ctrl in fk_ctrls if not cmds.objExists(ctrl)]
+        if missing:
+            cmds.warning(f"Missing FK controls: {missing}")
+            return
+        
+        missing_joints = [jnt for jnt in jnts if not cmds.objExists(jnt)]
+        if missing_joints:
+            cmds.warning(f"Missing joints: {missing_joints}")
+            return
+        
+        print(f"Switching IK to FK for {side} side from frame {start} to {end}")
+        current_time = cmds.currentTime(query=True)
+        
+        try:
+            # Set switch to IK mode first
+            cmds.setAttr(switch_attr, 10)
+            
+            # Bake FK controls to match IK animation
+            for frame in range(int(start), int(end) + 1):
+                cmds.currentTime(frame)
+                
+                for fk_ctrl, joint in zip(fk_ctrls[:4], jnts):
+                    if cmds.objExists(fk_ctrl) and cmds.objExists(joint):
+                        joint_rot = cmds.xform(joint, query=True, worldSpace=True, rotation=True)
+                        try:
+                            cmds.xform(fk_ctrl, worldSpace=True, rotation=joint_rot)
+                        except:
+                            joint_rot_local = cmds.getAttr(f"{joint}.rotate")[0]
+                            cmds.setAttr(f"{fk_ctrl}.rotateX", joint_rot_local[0])
+                            cmds.setAttr(f"{fk_ctrl}.rotateY", joint_rot_local[1])
+                            cmds.setAttr(f"{fk_ctrl}.rotateZ", joint_rot_local[2])
+                        
+                        cmds.setKeyframe(fk_ctrl, attribute='rotate')
+            
+            # Switch to FK mode
+            cmds.setKeyframe(switch_attr, time=start, value=0)
+            
+            print(f"Successfully switched IK to FK for {side} side")
+            cmds.confirmDialog(title="Success", message=f"IK to FK switch complete for {side} side!", button="OK")
+            
+        except Exception as e:
+            cmds.error(f"Error during IK to FK switch: {e}")
+        finally:
+            cmds.currentTime(current_time)
+
+    def switch_fk_to_ik_integrated(self, side, start, end):
+        """Switch from FK to IK - integrated into Cycle Maker."""
+        # Control definitions
+        ik_controls = {
+            'L': {'ik_handle': 'IKLeg_L', 'pole_vector': 'PoleLeg_L', 'switch_attr': 'FKIKLeg_L.FKIKBlend'},
+            'R': {'ik_handle': 'IKLeg_R', 'pole_vector': 'PoleLeg_R', 'switch_attr': 'FKIKLeg_R.FKIKBlend'}
+        }
+        joints = {
+            'L': ['Hip_L', 'Knee_L', 'Knee1_L', 'Ankle_L'],
+            'R': ['Hip_R', 'Knee_R', 'Knee1_R', 'Ankle_R']
+        }
+        ik_attrs = ['roll', 'rock', 'swivel']
+        
+        ik_handle = ik_controls[side]['ik_handle']
+        pole_vector = ik_controls[side]['pole_vector']
+        switch_attr = ik_controls[side]['switch_attr']
+        jnts = joints[side]
+        
+        # Check if controls exist
+        if not cmds.objExists(ik_handle):
+            cmds.warning(f"IK handle not found: {ik_handle}")
+            return
+        
+        if not cmds.objExists(pole_vector):
+            cmds.warning(f"Pole vector not found: {pole_vector}")
+            return
+        
+        missing_joints = [jnt for jnt in jnts if not cmds.objExists(jnt)]
+        if missing_joints:
+            cmds.warning(f"Missing joints: {missing_joints}")
+            return
+        
+        print(f"Switching FK to IK for {side} side from frame {start} to {end}")
+        current_time = cmds.currentTime(query=True)
+        
+        try:
+            # Set switch to FK mode first
+            cmds.setAttr(switch_attr, 0)
+            
+            # Bake IK controls to match FK animation
+            for frame in range(int(start), int(end) + 1):
+                cmds.currentTime(frame)
+                
+                ankle_joint = jnts[3]
+                knee_joint = jnts[1]
+                
+                if cmds.objExists(ankle_joint):
+                    # Get ankle world position
+                    ankle_pos = cmds.xform(ankle_joint, query=True, worldSpace=True, translation=True)
+                    cmds.xform(ik_handle, worldSpace=True, translation=ankle_pos)
+                    
+                    # Match IK handle rotation using constraint
+                    temp_constraint = cmds.orientConstraint(ankle_joint, ik_handle, maintainOffset=False)[0]
+                    cmds.delete(temp_constraint)
+                    
+                    cmds.setKeyframe(ik_handle, attribute=['translate', 'rotate'])
+                
+                # Match pole vector to knee position with offset
+                if cmds.objExists(knee_joint):
+                    knee_pos = cmds.xform(knee_joint, query=True, worldSpace=True, translation=True)
+                    hip_joint = jnts[0]
+                    ankle_joint = jnts[3]
+                    
+                    hip_pos = cmds.xform(hip_joint, query=True, worldSpace=True, translation=True)
+                    ankle_pos = cmds.xform(ankle_joint, query=True, worldSpace=True, translation=True)
+                    
+                    # Calculate pole vector offset
+                    import maya.api.OpenMaya as om
+                    hip_vec = om.MVector(hip_pos)
+                    knee_vec = om.MVector(knee_pos)
+                    ankle_vec = om.MVector(ankle_pos)
+                    
+                    leg_vec = ankle_vec - hip_vec
+                    to_knee = knee_vec - hip_vec
+                    
+                    proj_length = to_knee * leg_vec / leg_vec.length()
+                    proj_point = hip_vec + (leg_vec.normal() * proj_length)
+                    
+                    pole_dir = (knee_vec - proj_point).normal()
+                    pole_offset = 5.0
+                    pole_pos = knee_vec + (pole_dir * pole_offset)
+                    
+                    cmds.xform(pole_vector, worldSpace=True, translation=[pole_pos.x, pole_pos.y, pole_pos.z])
+                    cmds.setKeyframe(pole_vector, attribute='translate')
+                
+                # Reset IK control attributes to default
+                for attr in ik_attrs:
+                    attr_name = f"{ik_handle}.{attr}"
+                    if cmds.objExists(attr_name):
+                        cmds.setAttr(attr_name, 0)
+                        cmds.setKeyframe(attr_name)
+            
+            # Switch to IK mode
+            cmds.setKeyframe(switch_attr, time=start, value=10)
+            
+            print(f"Successfully switched FK to IK for {side} side")
+            cmds.confirmDialog(title="Success", message=f"FK to IK switch complete for {side} side!", button="OK")
+            
+        except Exception as e:
+            cmds.error(f"Error during FK to IK switch: {e}")
+        finally:
+            cmds.currentTime(current_time)
 
     # =========================================================================
     # SECTION 2: CONTROL MANAGEMENT
@@ -517,87 +897,67 @@ class CycleMakerUI:
         if detected_prefix != current_prefix or current_prefix == "tigerA_rigMain_01_:":
             cmds.textField(self.prefix_field, edit=True, text=detected_prefix)
         
-        # Process selections in pairs based on selection order
-        if len(sel) == 1:
-            # Single selection - selected control becomes SOURCE (left side), find its opposite as TARGET
-            ctrl = sel[0]
+        # Auto-detect and pair left/right controls
+        processed_controls = set()
+        
+        for ctrl in sel:
+            # Skip if already processed
+            if ctrl in processed_controls:
+                continue
+                
             ctrl_short = ctrl.split(':')[-1] if ':' in ctrl else ctrl
             
-            # Try to find opposite control
-            opposite_ctrl = None
-            if self.is_left(ctrl_short):
-                opposite_ctrl = self.get_other_side(ctrl, left_to_right=True)
-            elif self.is_right(ctrl_short):
-                opposite_ctrl = self.get_other_side(ctrl, left_to_right=False)
+            # Determine if this is a left or right control
+            is_left_ctrl = self.is_left(ctrl_short)
+            is_right_ctrl = self.is_right(ctrl_short)
             
-            if opposite_ctrl:
-                # Check if either control already exists in a pair
-                existing_pair_index = self._find_existing_pair(ctrl, opposite_ctrl)
+            if is_left_ctrl or is_right_ctrl:
+                # Try to find its opposite
+                opposite_ctrl = None
+                if is_left_ctrl:
+                    opposite_ctrl = self.get_other_side(ctrl, left_to_right=True)
+                    source_ctrl = ctrl
+                    target_ctrl = opposite_ctrl
+                else:  # is_right_ctrl
+                    opposite_ctrl = self.get_other_side(ctrl, left_to_right=False)
+                    source_ctrl = opposite_ctrl
+                    target_ctrl = ctrl
                 
-                if existing_pair_index is not None:
-                    # Replace existing pair with new ordering
-                    self.left_controls[existing_pair_index] = ctrl
-                    self.right_controls[existing_pair_index] = opposite_ctrl
-                    print(f"Replaced pair: {ctrl} (source) -> {opposite_ctrl} (target)")
-                else:
-                    # Add new pair
-                    self.left_controls.append(ctrl)
-                    self.right_controls.append(opposite_ctrl)
-                    print(f"Added pair: {ctrl} (source) -> {opposite_ctrl} (target)")
-            else:
-                cmds.warning(f"Cannot find opposite control for: {ctrl_short}")
-                
-        elif len(sel) >= 2:
-            # Multiple selections - use selection order to determine source/target pairs
-            print(f"Processing {len(sel)} selected controls in selection order...")
-            
-            # Process in pairs: 1st->2nd, 3rd->4th, etc.
-            for i in range(0, len(sel), 2):
-                if i + 1 < len(sel):
-                    source_ctrl = sel[i]      # First selected = source (left side)
-                    target_ctrl = sel[i + 1]  # Second selected = target (right side)
+                if opposite_ctrl:
+                    # Check if opposite is also in the selection
+                    if opposite_ctrl in sel:
+                        # Both sides selected, mark both as processed
+                        processed_controls.add(ctrl)
+                        processed_controls.add(opposite_ctrl)
+                    else:
+                        # Only one side selected, mark it as processed
+                        processed_controls.add(ctrl)
                     
-                    # Check if either control already exists in a pair
+                    # Check if this pair already exists
                     existing_pair_index = self._find_existing_pair(source_ctrl, target_ctrl)
                     
                     if existing_pair_index is not None:
-                        # Replace existing pair with new ordering
+                        # Replace existing pair
                         self.left_controls[existing_pair_index] = source_ctrl
                         self.right_controls[existing_pair_index] = target_ctrl
-                        print(f"Replaced pair: {source_ctrl} (source) -> {target_ctrl} (target)")
+                        print(f"Replaced pair: {source_ctrl} (L) -> {target_ctrl} (R)")
                     else:
                         # Add new pair
                         self.left_controls.append(source_ctrl)
                         self.right_controls.append(target_ctrl)
-                        print(f"Added pair: {source_ctrl} (source) -> {target_ctrl} (target)")
+                        # Initialize inversion settings for this pair
+                        self.control_inversions.append({
+                            'tx': False, 'ty': False, 'tz': False,
+                            'rx': False, 'ry': False, 'rz': False
+                        })
+                        print(f"Added pair: {source_ctrl} (L) -> {target_ctrl} (R)")
                 else:
-                    # Odd number - selected control becomes SOURCE (left side), find its opposite as TARGET
-                    ctrl = sel[i]
-                    ctrl_short = ctrl.split(':')[-1] if ':' in ctrl else ctrl
-                    
-                    # Try to find opposite control
-                    opposite_ctrl = None
-                    if self.is_left(ctrl_short):
-                        opposite_ctrl = self.get_other_side(ctrl, left_to_right=True)
-                    elif self.is_right(ctrl_short):
-                        opposite_ctrl = self.get_other_side(ctrl, left_to_right=False)
-                    
-                    if opposite_ctrl:
-                        # Check if either control already exists in a pair
-                        existing_pair_index = self._find_existing_pair(ctrl, opposite_ctrl)
-                        
-                        if existing_pair_index is not None:
-                            # Replace existing pair with new ordering
-                            self.left_controls[existing_pair_index] = ctrl
-                            self.right_controls[existing_pair_index] = opposite_ctrl
-                            print(f"Replaced pair (auto-detected): {ctrl} (source) -> {opposite_ctrl} (target)")
-                        else:
-                            # Add new pair
-                            self.left_controls.append(ctrl)
-                            self.right_controls.append(opposite_ctrl)
-                            print(f"Added pair (auto-detected): {ctrl} (source) -> {opposite_ctrl} (target)")
-                    else:
-                        cmds.warning(f"Cannot find opposite control for: {ctrl_short}")
+                    cmds.warning(f"Cannot find opposite control for: {ctrl_short}")
+                    processed_controls.add(ctrl)
+            else:
+                # Not a left/right control, skip it
+                cmds.warning(f"Control {ctrl_short} doesn't appear to be a left or right control (no _L or _R suffix)")
+                processed_controls.add(ctrl)
         
         # Refresh the UI to show new control pairs
         self._refresh_control_pairs_ui()
@@ -2827,7 +3187,7 @@ class CycleMakerUI:
             # Copy with calculated offset and per-control settings
             self._copy_with_per_control_settings(right_ctrl, left_ctrl, offset, inversion)
     
-    def _copy_with_per_control_settings(self, source_ctrl, target_ctrl, time_offset, inversion_settings):
+    def _copy_with_per_control_settings(self, source_ctrl, target_ctrl, time_offset, inversion_settings, value_offset=0.0):
         """Copy animation using per-control offset and inversion settings."""
         # Get full control names with prefix
         prefix = cmds.textField(self.prefix_field, query=True, text=True)
@@ -2843,14 +3203,10 @@ class CycleMakerUI:
         
         # If no keyed attributes, copy current values
         if not source_keyed_attrs:
-            self._copy_current_values_with_inversion(source_full, target_full, inversion_settings)
+            self._copy_current_values_with_inversion(source_full, target_full, inversion_settings, value_offset)
             return
 
-        # First normalize source curves to fit timeline range
-        print(f"DEBUG: Normalizing source curves for {source_full}")
-        self._normalize_curves_to_timeline(source_full, source_keyed_attrs)
-
-        # Copy keyed animation
+        # Copy keyed animation (source curves are not modified)
         for attr in source_keyed_attrs:
             source_attr = f"{source_full}.{attr}"
             target_attr = f"{target_full}.{attr}"
@@ -2863,7 +3219,7 @@ class CycleMakerUI:
                 continue
 
             # Copy keys with offset - ensure complete replacement
-            if self._copy_and_paste_keys_with_offset(source_attr, target_attr, source_curve, time_offset, 0.0):
+            if self._copy_and_paste_keys_with_offset(source_attr, target_attr, source_curve, time_offset, value_offset):
                 # Apply per-control inversion settings with auto-detection
                 if self._should_invert_attribute(attr, inversion_settings, source_full, target_full):
                     cmds.scaleKey(target_attr, valueScale=-1.0)
@@ -2873,16 +3229,17 @@ class CycleMakerUI:
                 self._smooth_cycle_transitions(target_attr)
                 self._apply_cycle_infinity(target_attr)
                 
-                # Apply curve fitting if enabled in settings
-                if self.fit_curve_default:
-                    print(f"DEBUG: Applying curve fitting to {target_attr}")
-                    self.contain_curve_within_time_range(target_attr)
+                # Curve fitting disabled during copy - preserves keys outside timeline range
+                # Cycle infinity handles offset curves properly without normalization
+                # if self.fit_curve_default:
+                #     print(f"DEBUG: Applying curve fitting to {target_attr}")
+                #     self.contain_curve_within_time_range(target_attr)
                 
                 # Timeline fitting disabled - cycle infinity handles offset curves properly
                 # Keyframes can extend beyond timeline when using cycle infinity
     
-    def _copy_current_values_with_inversion(self, source_ctrl, target_ctrl, inversion_settings):
-        """Copy current channel values with per-control inversion settings."""
+    def _copy_current_values_with_inversion(self, source_ctrl, target_ctrl, inversion_settings, value_offset=0.0):
+        """Copy current channel values with per-control inversion settings and value offset."""
         attrs_to_copy = ['translateX', 'translateY', 'translateZ', 
                         'rotateX', 'rotateY', 'rotateZ',
                         'scaleX', 'scaleY', 'scaleZ']
@@ -2899,8 +3256,10 @@ class CycleMakerUI:
                     # Get current value from source
                     current_value = cmds.getAttr(source_attr)
                     
+                    # Apply value offset
+                    final_value = current_value + value_offset
+                    
                     # Apply inversion if set for this attribute or auto-detected
-                    final_value = current_value
                     if self._should_invert_attribute(attr, inversion_settings, source_ctrl, target_ctrl):
                         final_value = -final_value
                     
@@ -3997,6 +4356,20 @@ class CycleMakerUI:
         return channels
     
        
+    def _toggle_layer_name_field(self, value):
+        """Toggle the layer name field based on checkbox state."""
+        cmds.textField(self.layer_name_field, edit=True, enable=value)
+        # Find and enable/disable the text label
+        parent = cmds.textField(self.layer_name_field, query=True, parent=True)
+        if parent:
+            children = cmds.layout(parent, query=True, childArray=True)
+            if children and len(children) > 0:
+                # Enable/disable the "Layer Name:" text
+                try:
+                    cmds.text(children[0], edit=True, enable=value)
+                except:
+                    pass
+
     def copy_with_offset(self, *_):
         """Copy animation using per-object offset settings from the object list."""
         if not self.copy_offset_objects:
@@ -4007,35 +4380,123 @@ class CycleMakerUI:
             cmds.warning("Need at least 2 objects in the list. First object is the source.")
             return
         
+        # Check if we should copy to a new animation layer
+        use_layer = cmds.checkBox(self.copy_to_layer_checkbox, query=True, value=True)
+        layer_name = None
+        original_layer = None
+        source_layer = None
+        
+        if use_layer:
+            # Get the currently selected source layer to copy from
+            try:
+                all_layers = cmds.ls(type='animLayer')
+                if all_layers:
+                    for layer in all_layers:
+                        if cmds.animLayer(layer, query=True, selected=True):
+                            source_layer = layer
+                            print(f"Will copy animation from layer: {source_layer}")
+                            break
+                    
+                    if not source_layer:
+                        # If no layer selected, check for preferred layer
+                        try:
+                            source_layer = cmds.animLayer(query=True, root=True, bestLayer=True)
+                            if source_layer:
+                                print(f"Using preferred layer as source: {source_layer}")
+                        except:
+                            pass
+                
+                if not source_layer:
+                    print("No source layer selected, will copy from base animation")
+            except:
+                print("Could not determine source layer, will copy from base animation")
+            
+            # Enable animation layers if not already enabled
+            if not cmds.animLayer(query=True, root=True):
+                try:
+                    # Create the base animation layer if it doesn't exist
+                    mel.eval('animLayerEditorOnlyAnimCurves;')
+                except:
+                    # Alternative method if the MEL command doesn't exist
+                    try:
+                        cmds.animLayer('BaseAnimation', override=True, passthrough=True)
+                    except:
+                        pass
+            
+            # Get layer name from field
+            layer_name = cmds.textField(self.layer_name_field, query=True, text=True)
+            if not layer_name:
+                layer_name = "OffsetLayer"
+            
+            # Create new animation layer
+            if cmds.animLayer(layer_name, query=True, exists=True):
+                # If layer exists, make it unique
+                counter = 1
+                while cmds.animLayer(f"{layer_name}{counter}", query=True, exists=True):
+                    counter += 1
+                layer_name = f"{layer_name}{counter}"
+            
+            # Create the layer - don't add selected objects yet, we'll add them individually
+            layer_name = cmds.animLayer(layer_name)
+            print(f"Created animation layer: {layer_name}")
+            
+            # Set layer to override mode (not additive) so values replace base animation
+            cmds.animLayer(layer_name, edit=True, override=True)
+            
+            # Set the new layer as the active layer
+            try:
+                original_layer = cmds.animLayer(query=True, root=True, bestLayer=True)
+            except:
+                original_layer = None
+            cmds.animLayer(layer_name, edit=True, selected=True, preferred=True)
+        
         copied_count = 0
         
-        # Copy sequentially: each object copies from the previous object in the list
-        for i in range(1, len(self.copy_offset_objects)):
-            source_ctrl = self.copy_offset_objects[i-1]  # Previous object as source
-            target_ctrl = self.copy_offset_objects[i]     # Current object as target
-            time_offset = self.copy_offset_time_offsets[i] if i < len(self.copy_offset_time_offsets) else 1
-            value_offset = self.copy_offset_value_offsets[i] if i < len(self.copy_offset_value_offsets) else 0.0
-            channel_settings = self.copy_offset_channel_settings[i] if i < len(self.copy_offset_channel_settings) else {}
+        try:
+            # Copy sequentially: each object copies from the previous object in the list
+            for i in range(1, len(self.copy_offset_objects)):
+                source_ctrl = self.copy_offset_objects[i-1]  # Previous object as source
+                target_ctrl = self.copy_offset_objects[i]     # Current object as target
+                time_offset = self.copy_offset_time_offsets[i] if i < len(self.copy_offset_time_offsets) else 1
+                value_offset = self.copy_offset_value_offsets[i] if i < len(self.copy_offset_value_offsets) else 0.0
+                channel_settings = self.copy_offset_channel_settings[i] if i < len(self.copy_offset_channel_settings) else {}
+                
+                # Get enabled channels for this object
+                channels = self._get_enabled_channels_for_object(channel_settings)
+                if not channels:
+                    print(f"Skipping {target_ctrl} - no channels enabled")
+                    continue
+                
+                # If using layers, select the target object before copying
+                if use_layer and layer_name:
+                    if cmds.objExists(target_ctrl):
+                        cmds.select(target_ctrl, replace=True)
+                
+                # Copy with individual object settings from previous object
+                print(f"Copying from {source_ctrl} → {target_ctrl} (time offset: {time_offset}, value offset: {value_offset})")
+                success = self.copy_animation_with_offset(source_ctrl, target_ctrl, channels, 
+                                                        time_offset, value_offset, 
+                                                        target_layer=layer_name if use_layer else None,
+                                                        source_layer=source_layer if use_layer else None)
+                if success:
+                    copied_count += 1
             
-            # Get enabled channels for this object
-            channels = self._get_enabled_channels_for_object(channel_settings)
-            if not channels:
-                print(f"Skipping {target_ctrl} - no channels enabled")
-                continue
-            
-            # Copy with individual object settings from previous object
-            print(f"Copying from {source_ctrl} → {target_ctrl} (time offset: {time_offset}, value offset: {value_offset})")
-            success = self.copy_animation_with_offset(source_ctrl, target_ctrl, channels, 
-                                                    time_offset, value_offset)
-            if success:
-                copied_count += 1
+            if copied_count > 0:
+                message = f"Sequential copy completed: {copied_count} objects with cascading offsets"
+                if use_layer:
+                    message += f" (on layer: {layer_name})"
+                cmds.inViewMessage(amg=message, pos='midCenter', fade=True)
+                print(f"🎯 Sequential Copy with Offset completed: {copied_count} objects in chain")
+            else:
+                cmds.warning("No animation was copied. Check object names and channel settings.")
         
-        if copied_count > 0:
-            cmds.inViewMessage(amg=f"Sequential copy completed: {copied_count} objects with cascading offsets", 
-                              pos='midCenter', fade=True)
-            print(f"🎯 Sequential Copy with Offset completed: {copied_count} objects in chain")
-        else:
-            cmds.warning("No animation was copied. Check object names and channel settings.")
+        finally:
+            # Restore original layer if we changed it
+            if use_layer and original_layer:
+                try:
+                    cmds.animLayer(original_layer, edit=True, preferred=True)
+                except:
+                    pass  # Original layer might not be valid anymore
 
     def _get_enabled_channels_for_object(self, channel_settings):
         """Get list of enabled channels for a specific object."""
@@ -4051,29 +4512,110 @@ class CycleMakerUI:
         
         return channels
     
-    def copy_animation_with_offset(self, source_ctrl, target_ctrl, channels, time_offset, value_offset):
-        """Copy animation from source to target with specified offsets."""
+    def copy_animation_with_offset(self, source_ctrl, target_ctrl, channels, time_offset, value_offset, target_layer=None, source_layer=None):
+        """Copy animation from source to target with specified offsets, optionally from/to animation layers."""
         if not (cmds.objExists(source_ctrl) and cmds.objExists(target_ctrl)):
             print(f"Controls not found: {source_ctrl} or {target_ctrl}")
             return False
         
+        print(f"DEBUG: Attempting to copy channels: {channels}")
+        print(f"DEBUG: Source layer: {source_layer}, Target layer: {target_layer}")
+        
         copied_channels = 0
         
         for channel in channels:
-            source_attr = f"{source_ctrl}.{channel}"
+            # Build the attribute names - include layer if copying from a specific layer
+            if source_layer:
+                # When copying from a layer, we need to get the layer-specific curve
+                source_attr = f"{source_ctrl}.{channel}"
+            else:
+                source_attr = f"{source_ctrl}.{channel}"
+            
             target_attr = f"{target_ctrl}.{channel}"
+            
+            print(f"DEBUG: Checking {source_attr}")
             
             # Skip if source doesn't have this attribute or it's not animated
             if not cmds.objExists(source_attr):
+                print(f"DEBUG: {source_attr} does not exist")
+                continue
+            
+            # Get the animation curve - if source_layer is specified, get it from that layer
+            if source_layer:
+                try:
+                    # Get the curve from the specific animation layer
+                    layer_curves = cmds.animLayer(source_layer, query=True, animCurves=True) or []
+                    source_curve = None
+                    # Find the curve that affects this attribute
+                    for curve in layer_curves:
+                        try:
+                            # Check if this curve is connected to our source attribute
+                            connections = cmds.listConnections(curve, plugs=True, destination=True) or []
+                            for conn in connections:
+                                if source_attr in conn or conn.startswith(f"{source_layer}."):
+                                    # Check if this curve affects our attribute
+                                    affected_attrs = cmds.listConnections(curve, plugs=True, source=False) or []
+                                    for attr in affected_attrs:
+                                        if source_ctrl in attr and channel in attr:
+                                            source_curve = curve
+                                            break
+                            if source_curve:
+                                break
+                        except:
+                            continue
+                    
+                    if not source_curve:
+                        # Fallback: try to get curve from the blended result
+                        source_curve = self._anim_curve_for_attr(source_attr)
+                        
+                except Exception as e:
+                    print(f"DEBUG: Error getting curve from layer: {e}")
+                    source_curve = self._anim_curve_for_attr(source_attr)
+            else:
+                source_curve = self._anim_curve_for_attr(source_attr)
+            
+            if not source_curve:
+                print(f"DEBUG: {source_attr} has no animation curve")
+                continue
+            
+            print(f"DEBUG: Found animation curve: {source_curve}")
+            
+            # Skip if source doesn't have this attribute or it's not animated
+            if not cmds.objExists(source_attr):
+                print(f"DEBUG: {source_attr} does not exist")
                 continue
             
             source_curve = self._anim_curve_for_attr(source_attr)
             if not source_curve:
+                print(f"DEBUG: {source_attr} has no animation curve")
                 continue
+            
+            print(f"DEBUG: Found animation curve: {source_curve}")
             
             # Skip if target doesn't have this attribute
             if not cmds.objExists(target_attr):
+                print(f"DEBUG: {target_attr} does not exist")
                 continue
+            
+            # Check if target attribute is locked - skip if it is
+            try:
+                if cmds.getAttr(target_attr, lock=True):
+                    # Silently skip locked attributes
+                    print(f"DEBUG: {target_attr} is locked, skipping")
+                    continue
+            except Exception:
+                pass
+            
+            # If using animation layer, add the attribute to the layer
+            if target_layer:
+                # Make sure the target is in the layer
+                try:
+                    cmds.animLayer(target_layer, edit=True, attribute=target_attr)
+                    print(f"DEBUG: Added {target_attr} to layer {target_layer}")
+                except Exception as e:
+                    # If we can't add to layer (might be locked), skip this attribute
+                    print(f"DEBUG: Could not add {target_attr} to layer: {e}")
+                    continue
             
             # Get time range from source
             try:
@@ -4086,15 +4628,6 @@ class CycleMakerUI:
                 
                 # Copy keys from source
                 cmds.copyKey(source_attr, time=(start_t, end_t), includeUpperBound=True)
-                
-                # Handle locked attributes
-                relock = False
-                try:
-                    if cmds.getAttr(target_attr, lock=True):
-                        relock = True
-                        cmds.setAttr(target_attr, lock=False)
-                except Exception:
-                    pass
                 
                 # Paste with offsets
                 try:
@@ -4111,27 +4644,17 @@ class CycleMakerUI:
                             cmds.keyframe(target_attr, edit=True, relative=True, valueChange=value_offset)
                     except Exception as e2:
                         cmds.warning(f"Failed to paste keys to {target_attr}: {e2}")
-                
-                # Apply successful tangent smoothing and cycle infinity for Copy with Offset
-                self._smooth_cycle_transitions(target_attr)
-                self._apply_cycle_infinity(target_attr)
-                
-                # Apply curve fitting if enabled in settings
-                if self.fit_curve_default:
-                    print(f"DEBUG: Applying curve fitting to {target_attr}")
-                    self.contain_curve_within_time_range(target_attr)
-                
-                # Restore lock state
-                if relock:
-                    try:
-                        cmds.setAttr(target_attr, lock=True)
-                    except Exception:
-                        pass
+                        continue
                 
                 copied_channels += 1
                         
             except Exception as e:
                 print(f"Error copying {source_attr} to {target_attr}: {e}")
+        
+        if copied_channels > 0:
+            print(f"Successfully copied {copied_channels} channels from {source_ctrl} to {target_ctrl}")
+        else:
+            print(f"No channels were copied from {source_ctrl} to {target_ctrl}")
         
         return copied_channels > 0
 
@@ -4228,50 +4751,83 @@ class CycleMakerUI:
 
             
     def copy_with_direction(self, *_):
-        """Copy animation based on current selection - left controls copy to right, right controls copy to left."""
+        """Copy animation from selected controls to their opposite side."""
         try:
+            # Check if "Mirror Current Frame Only" is enabled
+            current_frame_only = cmds.checkBox(self.mirror_current_frame_only, query=True, value=True)
+            if current_frame_only:
+                print("Mirror Current Frame Only mode enabled")
+                self._mirror_current_frame_from_selection()
+                return
+            
             # Get current selection
             selected_objects = cmds.ls(selection=True, type='transform')
             
             if not selected_objects:
-                # No selection - default to left to right
-                print("No objects selected. Defaulting to left-to-right copy.")
-                self.copy_left_to_right()
+                cmds.warning("No objects selected. Please select controls to copy from.")
                 return
             
-            # Analyze selection to determine direction
-            left_selected = 0
-            right_selected = 0
+            # Get offset values from the UI
+            time_offset = cmds.intField(self.lr_time_offset_field, query=True, value=True) if self.lr_time_offset_field else 0
+            value_offset = cmds.floatField(self.lr_value_offset_field, query=True, value=True) if self.lr_value_offset_field else 0.0
             
-            for obj in selected_objects:
-                if obj in self.left_controls:
-                    left_selected += 1
-                elif obj in self.right_controls:
-                    right_selected += 1
-                else:
-                    # Check if it's a left or right control by name patterns
-                    if self.is_left(obj):
-                        left_selected += 1
-                    elif self.is_right(obj):
-                        right_selected += 1
+            print(f"\n{'='*60}")
+            print(f"Copying from selection to opposite side")
+            print(f"Time Offset: {time_offset} frames")
+            print(f"Value Offset: {value_offset}")
+            print(f"{'='*60}")
             
-            # Determine direction based on selection
-            if left_selected > right_selected:
-                print(f"Left controls selected ({left_selected}). Copying left to right.")
-                self.copy_left_to_right()
-            elif right_selected > left_selected:
-                print(f"Right controls selected ({right_selected}). Copying right to left.")
-                self.copy_right_to_left()
-            elif left_selected == right_selected and left_selected > 0:
-                print(f"Equal left/right selection ({left_selected} each). Defaulting to left-to-right copy.")
-                self.copy_left_to_right()
-            else:
-                # No recognizable left/right controls - default to left to right
-                print("No recognizable left/right controls in selection. Defaulting to left-to-right copy.")
-                self.copy_left_to_right()
+            copied_count = 0
+            skipped_count = 0
+            
+            # Process each selected object
+            for source_ctrl in selected_objects:
+                # Find if this control is in our paired list
+                source_index = -1
+                target_ctrl = None
                 
+                if source_ctrl in self.left_controls:
+                    source_index = self.left_controls.index(source_ctrl)
+                    target_ctrl = self.right_controls[source_index]
+                elif source_ctrl in self.right_controls:
+                    source_index = self.right_controls.index(source_ctrl)
+                    target_ctrl = self.left_controls[source_index]
+                else:
+                    # Try to find opposite by name pattern
+                    if self.is_left(source_ctrl):
+                        target_ctrl = self.get_other_side(source_ctrl, left_to_right=True)
+                    elif self.is_right(source_ctrl):
+                        target_ctrl = self.get_other_side(source_ctrl, left_to_right=False)
+                    else:
+                        print(f"⚠ Skipped {source_ctrl} - not a left/right control")
+                        skipped_count += 1
+                        continue
+                
+                if not target_ctrl or not cmds.objExists(target_ctrl):
+                    print(f"⚠ Skipped {source_ctrl} - opposite control not found")
+                    skipped_count += 1
+                    continue
+                
+                # Get inversion settings for this pair
+                inversion = {}
+                if source_index >= 0 and source_index < len(self.control_inversions):
+                    inversion = self.control_inversions[source_index]
+                
+                # Copy animation with offset using existing function
+                print(f"Copying: {source_ctrl} → {target_ctrl}")
+                self._copy_with_per_control_settings(source_ctrl, target_ctrl, time_offset, inversion, value_offset)
+                copied_count += 1
+            
+            print(f"\n{'='*60}")
+            print(f"✓ Copied {copied_count} controls")
+            if skipped_count > 0:
+                print(f"⚠ Skipped {skipped_count} controls")
+            print(f"{'='*60}\n")
+            
         except Exception as e:
             cmds.warning(f"Copy with direction failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def contain_curve_within_time_range(self, curve_attr):
         """
@@ -4467,6 +5023,138 @@ class CycleMakerUI:
         cmds.optionMenu(rotation_dropdown, edit=True, value='X')
         cmds.checkBox(fit_curve_checkbox, edit=True, value=True)
         cmds.checkBox(auto_detect_checkbox, edit=True, value=True)
+
+    def _mirror_current_frame_from_selection(self):
+        """
+        Mirror animation at the current frame only for selected controls.
+        Automatically detects opposite side controls and copies values.
+        """
+        current_time = cmds.currentTime(query=True)
+        selected_objects = cmds.ls(selection=True, type='transform')
+        
+        if not selected_objects:
+            cmds.warning("No objects selected. Please select controls to mirror.")
+            return
+        
+        print(f"\n{'='*60}")
+        print(f"MIRROR CURRENT FRAME ONLY - Frame: {current_time}")
+        print(f"Selected objects: {selected_objects}")
+        print(f"{'='*60}")
+        
+        copied_count = 0
+        skipped_count = 0
+        
+        # Process each selected object
+        for source_ctrl in selected_objects:
+            # Find if this control is in our paired list
+            source_index = -1
+            target_ctrl = None
+            
+            if source_ctrl in self.left_controls:
+                source_index = self.left_controls.index(source_ctrl)
+                target_ctrl = self.right_controls[source_index]
+            elif source_ctrl in self.right_controls:
+                source_index = self.right_controls.index(source_ctrl)
+                target_ctrl = self.left_controls[source_index]
+            else:
+                # Try to find opposite by name pattern
+                if self.is_left(source_ctrl):
+                    target_ctrl = self.get_other_side(source_ctrl, left_to_right=True)
+                elif self.is_right(source_ctrl):
+                    target_ctrl = self.get_other_side(source_ctrl, left_to_right=False)
+                else:
+                    print(f"⚠ Skipped {source_ctrl} - not a left/right control")
+                    skipped_count += 1
+                    continue
+            
+            if not target_ctrl or not cmds.objExists(target_ctrl):
+                print(f"⚠ Skipped {source_ctrl} - opposite control not found")
+                skipped_count += 1
+                continue
+            
+            # Get inversion settings for this pair
+            inversion = {}
+            if source_index >= 0 and source_index < len(self.control_inversions):
+                inversion = self.control_inversions[source_index]
+            
+            # Copy frame values
+            self._copy_frame_values(source_ctrl, target_ctrl, current_time, inversion)
+            copied_count += 1
+            print(f"Mirrored frame {int(current_time)}: {source_ctrl} → {target_ctrl}")
+        
+        # Show summary
+        if copied_count > 0:
+            cmds.inViewMessage(
+                amg=f'<hl>Mirrored {copied_count} control(s) at frame {int(current_time)}</hl>',
+                pos='topCenter',
+                fade=True,
+                fadeStayTime=2000,
+                fadeOutTime=500
+            )
+        
+        if skipped_count > 0:
+            cmds.warning(f"Skipped {skipped_count} control(s)")
+    
+    def _copy_frame_values(self, source_ctrl, target_ctrl, time, inversion_settings):
+        """
+        Copy attribute values at a specific frame from source to target with inversion.
+        
+        Args:
+            source_ctrl: Source control name
+            target_ctrl: Target control name  
+            time: The time/frame to copy
+            inversion_settings: Dictionary of per-axis inversion settings
+        """
+        print(f"  _copy_frame_values called: {source_ctrl} → {target_ctrl} at frame {time}")
+        
+        # Get full control names with prefix
+        prefix = cmds.textField(self.prefix_field, query=True, text=True)
+        source_full = f"{prefix}{source_ctrl}" if not source_ctrl.startswith(prefix) else source_ctrl
+        target_full = f"{prefix}{target_ctrl}" if not target_ctrl.startswith(prefix) else target_ctrl
+        
+        print(f"  Full names: {source_full} → {target_full}")
+        
+        if not (cmds.objExists(source_full) and cmds.objExists(target_full)):
+            cmds.warning(f"Control not found: {source_full} or {target_full}")
+            return
+        
+        # Attributes to copy
+        attrs_to_copy = ['translateX', 'translateY', 'translateZ',
+                        'rotateX', 'rotateY', 'rotateZ']
+        
+        for attr in attrs_to_copy:
+            source_attr = f"{source_full}.{attr}"
+            target_attr = f"{target_full}.{attr}"
+            
+            # Check if both controls have this attribute
+            if not (self._target_has_attribute(source_full, attr) and 
+                   self._target_has_attribute(target_full, attr)):
+                continue
+            
+            try:
+                # Get value at the specific time from source
+                value = cmds.getAttr(source_attr, time=time)
+                
+                # Apply inversion if needed
+                should_invert = self._should_invert_attribute(attr, inversion_settings, source_full, target_full)
+                if should_invert:
+                    value = -value
+                
+                # Handle locked attributes
+                relock = self._handle_attribute_lock(target_attr, unlock=True)
+                
+                # Set keyframe on target at the same time
+                cmds.setKeyframe(target_attr, time=time, value=value)
+                print(f"    Set {attr}: {value} (inverted={should_invert})")
+                
+                # Restore lock state
+                if relock:
+                    self._handle_attribute_lock(target_attr, lock=True)
+                    
+            except Exception as e:
+                print(f"    ERROR copying {attr} at frame {time}: {e}")
+                import traceback
+                traceback.print_exc()
 
 # =========================================================================
 # MAIN EXECUTION

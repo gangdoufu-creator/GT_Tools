@@ -151,35 +151,68 @@ class CopyAnimBetweenRigsUI:
             debug_log += f'Checking {ctrl_clean}:\n  Source: {src} exists={src_exists}\n  Target: {tgt} exists={tgt_exists}\n'
             
             if src_exists and tgt_exists:
-                anim_attrs = cmds.listAnimatable(src) or []
+                # Get all keyable attributes
+                keyable_attrs = cmds.listAttr(src, keyable=True, scalar=True) or []
+                
+                # Separate animated from non-animated attributes
                 anim_attrs_with_keys = []
-                for attr in anim_attrs:
-                    key_count = cmds.keyframe(attr, query=True, keyframeCount=True)
+                static_attrs = []
+                
+                for attr in keyable_attrs:
+                    full_attr = src + '.' + attr
+                    key_count = cmds.keyframe(full_attr, query=True, keyframeCount=True)
                     if key_count and key_count > 0:
                         anim_attrs_with_keys.append(attr)
-                debug_log += f'  Animatable attributes with keys: {len(anim_attrs_with_keys)}\n'
-                if not anim_attrs_with_keys:
-                    skipped.append(f'{ctrl_clean} (no animation curves)')
-                    continue
-                    
-                # Copy animation for each attribute
+                    else:
+                        static_attrs.append(attr)
+                
+                debug_log += f'  Animated attributes: {len(anim_attrs_with_keys)}, Static attributes: {len(static_attrs)}\n'
+                
                 attrs_copied = 0
+                attrs_set = 0
+                
+                # Copy animation curves for animated attributes
                 for attr in anim_attrs_with_keys:
                     try:
-                        cmds.copyKey(attr)
-                        tgt_attr = tgt + '.' + attr.split('.')[-1]
+                        src_attr = src + '.' + attr
+                        tgt_attr = tgt + '.' + attr
+                        
                         if cmds.objExists(tgt_attr):
+                            cmds.copyKey(src_attr)
                             cmds.pasteKey(tgt_attr, option='replaceCompletely')
                             attrs_copied += 1
                         else:
                             debug_log += f'    Target attribute missing: {tgt_attr}\n'
                     except Exception as e:
-                        skipped.append(f'{ctrl_clean}.{attr.split(".")[-1]} (error: {e})')
-                        debug_log += f'    Error copying {attr}: {e}\n'
+                        skipped.append(f'{ctrl_clean}.{attr} (anim error: {e})')
+                        debug_log += f'    Error copying animation for {attr}: {e}\n'
                 
-                if attrs_copied > 0:
-                    copied.append(f'{ctrl_clean} ({attrs_copied} attrs)')
-                    debug_log += f'  Successfully copied {attrs_copied} attributes\n'
+                # Copy static values for non-animated attributes
+                for attr in static_attrs:
+                    try:
+                        src_attr = src + '.' + attr
+                        tgt_attr = tgt + '.' + attr
+                        
+                        if cmds.objExists(tgt_attr):
+                            # Check if attribute is settable (not locked, not connected as destination)
+                            if cmds.getAttr(tgt_attr, settable=True):
+                                value = cmds.getAttr(src_attr)
+                                cmds.setAttr(tgt_attr, value)
+                                attrs_set += 1
+                            else:
+                                debug_log += f'    Target attribute not settable: {tgt_attr}\n'
+                        else:
+                            debug_log += f'    Target attribute missing: {tgt_attr}\n'
+                    except Exception as e:
+                        debug_log += f'    Error setting {attr}: {e}\n'
+                
+                if attrs_copied > 0 or attrs_set > 0:
+                    copied.append(f'{ctrl_clean} ({attrs_copied} anim, {attrs_set} static)')
+                    debug_log += f'  Successfully copied {attrs_copied} animated and {attrs_set} static attributes\n'
+                elif len(keyable_attrs) == 0:
+                    skipped.append(f'{ctrl_clean} (no keyable attributes)')
+                else:
+                    skipped.append(f'{ctrl_clean} (all attributes locked or connected)')
             else:
                 if not src_exists:
                     debug_log += f'  Source control missing!\n'

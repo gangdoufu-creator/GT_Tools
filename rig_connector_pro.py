@@ -1536,38 +1536,11 @@ class ControlMappingUI:
         
         for row in self.mapping_rows:
             has_missing = False
-            target_ctrl = row['target_ctrl']
-            
-            # Check the actual mapping data, not just UI text
-            if target_ctrl in self.connector.control_mapping:
-                driver_mappings = self.connector.control_mapping[target_ctrl]
-                
-                # Check if any driver is None or doesn't exist
-                for i, driver_ctrl in enumerate(driver_mappings):
-                    if driver_ctrl is None:
-                        has_missing = True
-                        break
-                    
-                    # Also verify the control actually exists
-                    if not cmds.objExists(driver_ctrl):
-                        # Try to find it by short name
-                        if i < len(self.connector.drivers):
-                            driver = self.connector.drivers[i]
-                            found = False
-                            for ctrl in driver.controls:
-                                ctrl_name = ctrl.split(':')[-1].split('|')[-1]
-                                if ctrl_name == driver_ctrl:
-                                    found = True
-                                    break
-                            if not found:
-                                has_missing = True
-                                break
-                        else:
-                            has_missing = True
-                            break
-            else:
-                # No mapping data for this control means it's missing
-                has_missing = True
+            for field in row['driver_fields']:
+                driver_text = cmds.textField(field, query=True, text=True)
+                if driver_text == "MISSING" or not driver_text.strip():
+                    has_missing = True
+                    break
             
             if has_missing:
                 self._show_row(row)
@@ -1686,30 +1659,14 @@ class ControlMappingUI:
     
     def save_mapping(self, *args):
         """Save control mapping to a JSON file."""
-        print("Save mapping called...")
+        filepath = cmds.fileDialog2(
+            fileMode=0,
+            caption="Save Control Mapping",
+            fileFilter="JSON Files (*.json)",
+            defaultExtension="json"
+        )
         
-        try:
-            filepath = cmds.fileDialog2(
-                fileMode=0,
-                caption="Save Control Mapping",
-                fileFilter="JSON Files (*.json);;All Files (*.*)",
-                okCaption="Save"
-            )
-            
-            print(f"File dialog returned: {filepath}")
-            
-            if not filepath:
-                print("No file selected, cancelling save")
-                return
-            
-            # Ensure .json extension
-            if not filepath[0].endswith('.json'):
-                filepath = [filepath[0] + '.json']
-                
-        except Exception as e:
-            print(f"Error opening file dialog: {e}")
-            import traceback
-            traceback.print_exc()
+        if not filepath:
             return
         
         # Read current mappings from UI
@@ -1734,9 +1691,6 @@ class ControlMappingUI:
         
         # Save to file
         try:
-            print(f"Attempting to save to: {filepath[0]}")
-            print(f"Mapping data: {len(mapping_data['mappings'])} controls")
-            
             with open(filepath[0], 'w') as f:
                 json.dump(mapping_data, f, indent=4)
             
@@ -1749,16 +1703,13 @@ class ControlMappingUI:
         except Exception as e:
             cmds.warning(f"Failed to save mapping: {e}")
             print(f"Error saving mapping: {e}")
-            import traceback
-            traceback.print_exc()
     
     def load_mapping(self, *args):
         """Load control mapping from a JSON file."""
         filepath = cmds.fileDialog2(
             fileMode=1,
             caption="Load Control Mapping",
-            fileFilter="JSON Files (*.json);;All Files (*.*)",
-            okCaption="Load"
+            fileFilter="JSON Files (*.json)"
         )
         
         if not filepath:

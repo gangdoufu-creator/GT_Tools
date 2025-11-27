@@ -28,8 +28,15 @@ class IKFKSwitcher:
     IK/FK Switcher for Dragon Rig
     """
     
-    def __init__(self):
-        """Initialize the IK/FK Switcher with dragon rig control names."""
+    def __init__(self, namespace=""):
+        """
+        Initialize the IK/FK Switcher with dragon rig control names.
+        
+        Args:
+            namespace (str): The rig namespace (e.g., "Proxy_Version_But_Bined_Skin_Instead:")
+        """
+        self.namespace = namespace
+        
         # Control naming for dragon rig
         self.ik_controls = {
             'L': {
@@ -60,6 +67,54 @@ class IKFKSwitcher:
         
         # IK control attributes
         self.ik_attrs = ['roll', 'rock', 'swivel']
+    
+    def get_namespaced_name(self, name):
+        """
+        Add namespace to a control or joint name.
+        
+        Args:
+            name (str): The base name without namespace
+            
+        Returns:
+            str: The full name with namespace
+        """
+        if self.namespace:
+            return f"{self.namespace}{name}"
+        return name
+    
+    def get_available_namespaces(self):
+        """
+        Get all available namespaces in the scene.
+        
+        Returns:
+            list: List of namespace strings
+        """
+        namespaces = cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True) or []
+        # Filter out Maya default namespaces
+        filtered = [ns for ns in namespaces if ns not in ['UI', 'shared']]
+        # Add colon suffix for dropdown display
+        return [f"{ns}:" for ns in filtered] + ["(No Namespace)"]
+    
+    def detect_namespace_from_selection(self):
+        """
+        Detect namespace from current selection.
+        
+        Returns:
+            str: Detected namespace or empty string
+        """
+        selection = cmds.ls(selection=True)
+        if not selection:
+            return ""
+        
+        for obj in selection:
+            if ':' in obj:
+                # Extract namespace (everything before the last colon)
+                parts = obj.split(':')
+                if len(parts) > 1:
+                    namespace = ':'.join(parts[:-1]) + ':'
+                    return namespace
+        
+        return ""
     
     def detect_side_from_selection(self):
         """
@@ -97,10 +152,10 @@ class IKFKSwitcher:
             cmds.error("Invalid side. Must be 'L' or 'R'")
             return
         
-        # Get controls and joints
-        fk_ctrls = self.fk_controls[side]
-        joints = self.joints[side]
-        switch_attr = self.ik_controls[side]['switch_attr']
+        # Get controls and joints with namespace
+        fk_ctrls = [self.get_namespaced_name(ctrl) for ctrl in self.fk_controls[side]]
+        joints = [self.get_namespaced_name(jnt) for jnt in self.joints[side]]
+        switch_attr = self.get_namespaced_name(self.ik_controls[side]['switch_attr'])
         
         # Check if controls exist
         missing = [ctrl for ctrl in fk_ctrls if not cmds.objExists(ctrl)]
@@ -135,18 +190,13 @@ class IKFKSwitcher:
                 # Match each FK control to its corresponding joint
                 for fk_ctrl, joint in zip(fk_ctrls[:4], joints):  # Skip toes for now
                     if cmds.objExists(fk_ctrl) and cmds.objExists(joint):
-                        # Get joint world space rotation
-                        joint_rot = cmds.xform(joint, query=True, worldSpace=True, rotation=True)
+                        # Get joint rotation in object space
+                        joint_rot = cmds.getAttr(f"{joint}.rotate")[0]
                         
-                        # Set FK control to match
-                        try:
-                            cmds.xform(fk_ctrl, worldSpace=True, rotation=joint_rot)
-                        except:
-                            # If world space doesn't work, try object space
-                            joint_rot_local = cmds.getAttr(f"{joint}.rotate")[0]
-                            cmds.setAttr(f"{fk_ctrl}.rotateX", joint_rot_local[0])
-                            cmds.setAttr(f"{fk_ctrl}.rotateY", joint_rot_local[1])
-                            cmds.setAttr(f"{fk_ctrl}.rotateZ", joint_rot_local[2])
+                        # Set FK control rotation
+                        cmds.setAttr(f"{fk_ctrl}.rotateX", joint_rot[0])
+                        cmds.setAttr(f"{fk_ctrl}.rotateY", joint_rot[1])
+                        cmds.setAttr(f"{fk_ctrl}.rotateZ", joint_rot[2])
                         
                         # Set keyframe on FK control
                         cmds.setKeyframe(fk_ctrl, attribute='rotate')
@@ -187,11 +237,11 @@ class IKFKSwitcher:
             cmds.error("Invalid side. Must be 'L' or 'R'")
             return
         
-        # Get controls and joints
-        ik_handle = self.ik_controls[side]['ik_handle']
-        pole_vector = self.ik_controls[side]['pole_vector']
-        switch_attr = self.ik_controls[side]['switch_attr']
-        joints = self.joints[side]
+        # Get controls and joints with namespace
+        ik_handle = self.get_namespaced_name(self.ik_controls[side]['ik_handle'])
+        pole_vector = self.get_namespaced_name(self.ik_controls[side]['pole_vector'])
+        switch_attr = self.get_namespaced_name(self.ik_controls[side]['switch_attr'])
+        joints = [self.get_namespaced_name(jnt) for jnt in self.joints[side]]
         
         # Check if controls exist
         if not cmds.objExists(ik_handle):
@@ -311,13 +361,47 @@ class IKFKSwitcher:
             cmds.deleteUI("ikfkSwitcherWindow")
         
         # Create window
-        window = cmds.window("ikfkSwitcherWindow", title="IK/FK Switcher", widthHeight=(300, 200))
+        window = cmds.window("ikfkSwitcherWindow", title="IK/FK Switcher", widthHeight=(350, 280))
         
         # Create layout
         main_layout = cmds.columnLayout(adjustableColumn=True, rowSpacing=10, columnOffset=("both", 10))
         
         # Title
         cmds.text(label="Dragon Rig IK/FK Switcher", align="center", font="boldLabelFont", height=30)
+        cmds.separator(style="in", height=10)
+        
+        # Namespace selection
+        cmds.text(label="Rig Namespace:", align="left", font="boldLabelFont")
+        cmds.rowLayout(numberOfColumns=2, columnWidth2=(250, 80), adjustableColumn=1)
+        
+        # Get available namespaces
+        namespaces = self.get_available_namespaces()
+        
+        # Try to detect namespace from selection
+        detected_ns = self.detect_namespace_from_selection()
+        default_ns = detected_ns if detected_ns else (namespaces[0] if namespaces else "(No Namespace)")
+        
+        # Create dropdown
+        namespace_dropdown = cmds.optionMenu(label="", changeCommand=self.on_namespace_changed)
+        for ns in namespaces:
+            cmds.menuItem(label=ns)
+        
+        # Set default selection
+        if default_ns in namespaces:
+            cmds.optionMenu(namespace_dropdown, edit=True, value=default_ns)
+        
+        # Store dropdown reference
+        self.namespace_dropdown = namespace_dropdown
+        
+        # Detect button
+        cmds.button(
+            label="Detect",
+            command=lambda _: self.detect_and_set_namespace(),
+            backgroundColor=[0.4, 0.6, 0.4],
+            annotation="Detect namespace from selected control"
+        )
+        cmds.setParent('..')
+        
         cmds.separator(style="in", height=10)
         
         # Instructions
@@ -357,6 +441,37 @@ class IKFKSwitcher:
         
         # Show window
         cmds.showWindow(window)
+    
+    def on_namespace_changed(self, selected_namespace):
+        """
+        Callback when namespace dropdown changes.
+        
+        Args:
+            selected_namespace (str): The selected namespace from dropdown
+        """
+        if selected_namespace == "(No Namespace)":
+            self.namespace = ""
+        else:
+            self.namespace = selected_namespace
+        print(f"Namespace set to: '{self.namespace}'")
+    
+    def detect_and_set_namespace(self):
+        """Detect namespace from selection and update the dropdown."""
+        detected_ns = self.detect_namespace_from_selection()
+        if detected_ns:
+            self.namespace = detected_ns
+            cmds.optionMenu(self.namespace_dropdown, edit=True, value=detected_ns)
+            print(f"Detected and set namespace to: '{detected_ns}'")
+        else:
+            self.namespace = ""
+            cmds.optionMenu(self.namespace_dropdown, edit=True, value="(No Namespace)")
+            print("No namespace detected from selection")
+        
+        cmds.confirmDialog(
+            title="Namespace Detection",
+            message=f"Namespace: {self.namespace if self.namespace else '(None)'}",
+            button=["OK"]
+        )
     
     def execute_switch(self, direction):
         """

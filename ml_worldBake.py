@@ -96,76 +96,6 @@ except ImportError:
     if result == 'Download Module':
         mc.showHelp('http://morganloomis.com/tool/ml_utilities/',absolute=True)
 
-
-def createSmartConstraint(source, target):
-    '''
-    Creates a parent constraint that only affects unlocked channels.
-    Also locks corresponding channels on the source locator to match the target.
-    If all channels are locked, no constraint is created.
-    '''
-    # Check which translation and rotation channels are locked
-    translate_axes = ['X', 'Y', 'Z']
-    rotate_axes = ['X', 'Y', 'Z']
-    
-    unlocked_translate = []
-    unlocked_rotate = []
-    locked_translate = []
-    locked_rotate = []
-    
-    for axis in translate_axes:
-        if not mc.getAttr(target + '.translate' + axis, lock=True):
-            unlocked_translate.append(axis.lower())
-        else:
-            locked_translate.append(axis)
-    
-    for axis in rotate_axes:
-        if not mc.getAttr(target + '.rotate' + axis, lock=True):
-            unlocked_rotate.append(axis.lower())
-        else:
-            locked_rotate.append(axis)
-    
-    # Lock corresponding channels on the source locator
-    for axis in locked_translate:
-        try:
-            mc.setAttr(source + '.translate' + axis, lock=True)
-        except:
-            pass  # Ignore if attribute doesn't exist or can't be locked
-    
-    for axis in locked_rotate:
-        try:
-            mc.setAttr(source + '.rotate' + axis, lock=True)
-        except:
-            pass  # Ignore if attribute doesn't exist or can't be locked
-    
-    # If no channels are unlocked, don't create constraint
-    if not unlocked_translate and not unlocked_rotate:
-        OpenMaya.MGlobal.displayWarning('All transform channels are locked on {}, skipping constraint.'.format(target))
-        return None
-    
-    # Build skip flags for locked channels
-    skip_translate = []
-    skip_rotate = []
-    
-    for axis in ['x', 'y', 'z']:
-        if axis not in unlocked_translate:
-            skip_translate.append(axis)
-        if axis not in unlocked_rotate:
-            skip_rotate.append(axis)
-    
-    try:
-        # Create constraint with appropriate skip flags
-        constraint_kwargs = {}
-        if skip_translate:
-            constraint_kwargs['skipTranslate'] = skip_translate
-        if skip_rotate:
-            constraint_kwargs['skipRotate'] = skip_rotate
-            
-        constraint = mc.parentConstraint(source, target, **constraint_kwargs)[0]
-        return constraint
-    except Exception as e:
-        OpenMaya.MGlobal.displayWarning('Failed to create constraint: {}'.format(str(e)))
-        return None
-
 def ui():
     '''
     User interface for world bake
@@ -183,21 +113,13 @@ and bake "from locators" to re-apply your animation.''') as win:
         mc.radioButtonGrp('ml_worldBake_space_radioButton', label='Bake To Space', numberOfRadioButtons=3,
                           labelArray3=('World','Camera','Last Selected'), select=1,
                           annotation='The locators will be parented to world, the current camera, or the last selection.')
-        
-        # Create a row layout to place checkboxes side by side
-        mc.rowLayout(numberOfColumns=3, columnWidth3=(180, 20, 150))
         mc.checkBoxGrp('ml_worldBake_constrain_checkBox',label='Maintain Constraints',
                        annotation='Constrain source nodes to the created locators, after baking.')
-        mc.text(label="")  # Spacer
-        mc.checkBoxGrp('ml_worldBake_leaveAtCurrentFrame_checkBox', label='Current Frame only',
-                       annotation='Leave objects at their current time frame with offset and no keys on locators.')
-        mc.setParent('..')
 
         win.ButtonWithPopup(label='Bake Selection To Locators', command=toLocators, annotation='Bake selected object to locators specified space.',
             readUI_toArgs={'bakeOnOnes':'ml_worldBake_bakeOnOnes_checkBox',
                            'spaceInt':'ml_worldBake_space_radioButton',
-                           'constrainSource':'ml_worldBake_constrain_checkBox',
-                           'leaveAtCurrentFrame':'ml_worldBake_leaveAtCurrentFrame_checkBox'},
+                           'constrainSource':'ml_worldBake_constrain_checkBox'},
             name=win.name)#this last arg is temp..
         mc.setParent('..')
 
@@ -226,52 +148,13 @@ and bake "from locators" to re-apply your animation.''') as win:
 
 
 
-def createCurrentFrameLocators(objs, parent=None, constrainSource=False):
-    '''
-    Creates locators positioned at the current frame without baking animation keys.
-    Similar to matchBakeLocators but only captures the current position.
-    '''
-    if not objs:
-        OpenMaya.MGlobal.displayWarning('Select an Object')
-        return
-
-    locs = list()
-
-    for obj in objs:
-        name = mc.ls(obj, shortNames=True)[0]
-        if ':' in name:
-            name = obj.rpartition(':')[-1]
-
-        locator = mc.spaceLocator(name='worldBake_'+name+'_#')[0]
-        
-        mc.setAttr(locator+'.rotateOrder', 3)
-
-        # Add attributes to connect back to source
-        mc.addAttr(locator, longName='ml_bakeSource', attributeType='message')
-        mc.connectAttr('.'.join((obj,'message')), '.'.join((locator,'ml_bakeSource')))
-        mc.addAttr(locator, longName='ml_bakeSourceName', dataType='string')
-        mc.setAttr('.'.join((locator,'ml_bakeSourceName')), name, type='string')
-
-        # Position locator at current frame position of object
-        mc.matchTransform(locator, obj, position=True, rotation=True, scale=False)
-
-        if parent:
-            locator = mc.parent(locator, parent)[0]
-
-        locs.append(locator)
-
-        if constrainSource:
-            createSmartConstraint(locator, obj)
-
-    mc.select(locs)
-
-
-def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=False, leaveAtCurrentFrame=False):
+def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=False):
     '''
     Creates locators, and bakes their position to selection.
     Creates connections to the source objects, so they can
     be found later to bake back.
     '''
+
     if spaceInt and 0 <= spaceInt <= 2:
         space = ['world', 'camera', 'last'][spaceInt]
 
@@ -284,12 +167,6 @@ def toLocators(bakeOnOnes=False, space='world', spaceInt=None, constrainSource=F
         sel = sel[:-1]
 
     mc.select(sel)
-
-    if leaveAtCurrentFrame:
-        # Create locators positioned at current frame without baking keys
-        createCurrentFrameLocators(sel, parent=parent, constrainSource=constrainSource)
-        return
-
     matchBakeLocators(parent=parent, bakeOnOnes=bakeOnOnes, constrainSource=constrainSource)
 
 
@@ -385,7 +262,7 @@ def matchBakeLocators(parent=None, bakeOnOnes=False, constrainSource=False):
     if constrainSource:
         mc.cutKey(objs)
         for loc, obj in zip(locs, objs):
-            createSmartConstraint(loc, obj)
+            mc.parentConstraint(loc, obj)
 
 def reparent(bakeOnOnes=False):
 

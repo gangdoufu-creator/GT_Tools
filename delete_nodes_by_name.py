@@ -5,6 +5,8 @@ Excludes joints by default to prevent rig breakage.
 """
 
 import maya.cmds as cmds
+import json
+import os
 
 
 def delete_nodes_by_patterns(patterns, exclude_joints=True, dry_run=False):
@@ -33,19 +35,55 @@ def delete_nodes_by_patterns(patterns, exclude_joints=True, dry_run=False):
     print(f"Exclude joints: {exclude_joints}")
     print("-" * 60)
     
+    # Get ALL nodes in the scene first, then filter by pattern
+    # This is more reliable than wildcard search with namespaces
+    # Use dagObjects=True to get all DAG nodes including deeply nested ones
+    all_scene_nodes = cmds.ls(long=True, dagObjects=True)
+    # Also get dependency nodes (non-DAG nodes like shaders, etc.)
+    all_scene_nodes += cmds.ls(long=True, dependencyNodes=True)
+    # Remove duplicates
+    all_scene_nodes = list(set(all_scene_nodes))
+    
+    print(f"Total nodes in scene: {len(all_scene_nodes)}")
+    
     # Search for each pattern
     for pattern in patterns:
-        # Add wildcards for substring search
-        search_pattern = f'*{pattern}*'
-        nodes = cmds.ls(search_pattern, long=True)  # Use long names to avoid ambiguity
+        matching_nodes = []
         
-        if nodes:
-            print(f"\nFound {len(nodes)} nodes matching pattern '{pattern}':")
-            for node in nodes:
-                short_name = node.split('|')[-1]  # Get short name for display
-                print(f"  - {short_name}")
+        print(f"\nSearching for pattern: '{pattern}'")
+        
+        # Filter nodes that contain the pattern (case-insensitive)
+        for node in all_scene_nodes:
+            # Check both the full path and the short name
+            short_name = node.split('|')[-1]
+            # Also check without namespace
+            name_without_ns = short_name.split(':')[-1] if ':' in short_name else short_name
             
-            all_nodes_to_delete.extend(nodes)
+            # Debug: Print first few matches
+            if pattern.lower() in name_without_ns.lower():
+                matching_nodes.append(node)
+                if len(matching_nodes) <= 5:  # Show first 5 matches as we find them
+                    print(f"  Found: {short_name}")
+            elif pattern.lower() in short_name.lower():
+                matching_nodes.append(node)
+                if len(matching_nodes) <= 5:
+                    print(f"  Found: {short_name}")
+            elif pattern.lower() in node.lower():
+                matching_nodes.append(node)
+                if len(matching_nodes) <= 5:
+                    print(f"  Found: {short_name}")
+        
+        if matching_nodes:
+            print(f"\nFound {len(matching_nodes)} nodes matching pattern '{pattern}':")
+            for node in matching_nodes:
+                short_name = node.split('|')[-1]  # Get short name for display
+                try:
+                    node_type = cmds.nodeType(node)
+                    print(f"  - {short_name} [{node_type}]")
+                except:
+                    print(f"  - {short_name} [unknown type]")
+            
+            all_nodes_to_delete.extend(matching_nodes)
         else:
             print(f"\nNo nodes found matching pattern '{pattern}'")
     
@@ -107,6 +145,59 @@ def delete_nodes_by_patterns(patterns, exclude_joints=True, dry_run=False):
     return len(all_nodes_to_delete)
 
 
+def save_patterns_to_file(patterns, filepath):
+    """
+    Save patterns list to a JSON file.
+    
+    Args:
+        patterns (list): List of pattern strings to save
+        filepath (str): Full path to the JSON file
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        data = {
+            "patterns": patterns,
+            "description": "Delete Nodes by Name - Pattern List"
+        }
+        
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=4)
+        
+        print(f"✓ Saved {len(patterns)} patterns to: {filepath}")
+        return True
+    except Exception as e:
+        print(f"✗ Error saving patterns: {e}")
+        return False
+
+
+def load_patterns_from_file(filepath):
+    """
+    Load patterns list from a JSON file.
+    
+    Args:
+        filepath (str): Full path to the JSON file
+    
+    Returns:
+        list: List of patterns, or empty list if error
+    """
+    try:
+        if not os.path.exists(filepath):
+            print(f"✗ File not found: {filepath}")
+            return []
+        
+        with open(filepath, 'r') as f:
+            data = json.load(f)
+        
+        patterns = data.get("patterns", [])
+        print(f"✓ Loaded {len(patterns)} patterns from: {filepath}")
+        return patterns
+    except Exception as e:
+        print(f"✗ Error loading patterns: {e}")
+        return []
+
+
 def delete_nodes_ui():
     """Create a UI for deleting nodes by name patterns."""
     window_name = "deleteNodesByNameWindow"
@@ -116,7 +207,7 @@ def delete_nodes_ui():
         cmds.deleteUI(window_name)
     
     # Create window
-    window = cmds.window(window_name, title="Delete Nodes by Name", widthHeight=(450, 300))
+    window = cmds.window(window_name, title="Delete Nodes by Name", widthHeight=(450, 350))
     
     main_layout = cmds.columnLayout(adjustableColumn=True, rowSpacing=5)
     
@@ -131,8 +222,70 @@ def delete_nodes_ui():
     cmds.separator(height=5, style="none")
     
     # Text field for patterns
-    patterns_field = cmds.scrollField(height=120, wordWrap=False, 
+    patterns_field = cmds.scrollField(height=100, wordWrap=False, 
                                       text="FKOffsettailFin\n")
+    
+    cmds.separator(height=5, style="none")
+    
+    # Save/Load buttons
+    cmds.rowLayout(numberOfColumns=2, columnWidth2=(220, 220), columnAlign=[(1, "center"), (2, "center")])
+    
+    def save_patterns(*args):
+        patterns_text = cmds.scrollField(patterns_field, query=True, text=True)
+        patterns = [p.strip() for p in patterns_text.split('\n') if p.strip()]
+        
+        if not patterns:
+            cmds.warning("No patterns to save.")
+            return
+        
+        # File dialog to choose save location
+        result = cmds.fileDialog2(
+            fileMode=0,  # Save file
+            caption="Save Pattern List",
+            fileFilter="JSON Files (*.json)",
+            defaultExtension="json"
+        )
+        
+        if result:
+            filepath = result[0]
+            if save_patterns_to_file(patterns, filepath):
+                cmds.confirmDialog(
+                    title='Success',
+                    message=f'Saved {len(patterns)} patterns to:\n{filepath}',
+                    button=['OK'],
+                    defaultButton='OK'
+                )
+    
+    def load_patterns(*args):
+        # File dialog to choose file to load
+        result = cmds.fileDialog2(
+            fileMode=1,  # Open file
+            caption="Load Pattern List",
+            fileFilter="JSON Files (*.json)"
+        )
+        
+        if result:
+            filepath = result[0]
+            patterns = load_patterns_from_file(filepath)
+            
+            if patterns:
+                # Update the text field with loaded patterns
+                patterns_text = '\n'.join(patterns)
+                cmds.scrollField(patterns_field, edit=True, text=patterns_text + '\n')
+                cmds.confirmDialog(
+                    title='Success',
+                    message=f'Loaded {len(patterns)} patterns from:\n{filepath}',
+                    button=['OK'],
+                    defaultButton='OK'
+                )
+    
+    cmds.button(label="Save List to File", 
+                command=save_patterns,
+                backgroundColor=[0.3, 0.6, 0.3])
+    cmds.button(label="Load List from File", 
+                command=load_patterns,
+                backgroundColor=[0.3, 0.5, 0.7])
+    cmds.setParent("..")
     
     cmds.separator(height=10, style="none")
     
