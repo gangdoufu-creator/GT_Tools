@@ -65,7 +65,13 @@ def matchBake(source=None, destination=None, bakeOnOnes=False, maintainOffset=Fa
             mc.setAttr(dup+'.'+a, lock=False, keyable=True)
         
         constraint.append(mc.parentConstraint(s, dup, maintainOffset=maintainOffset))
-        mc.cutKey(d, attribute=attributes, time=(start,end))
+        
+        # Only cut keys from transform attributes, preserving other channels (like camera focal length)
+        for attr in attributes:
+            try:
+                mc.cutKey(d, attribute=attr, time=(start,end))
+            except:
+                pass
         
         duplicates[d] = dup
         keytimes[d] = {}
@@ -243,7 +249,14 @@ def matchBakeLocators(parent=None, bakeOnOnes=False, constrainSource=False):
         matchBake(noKeys, noKeysLoc, bakeOnOnes=True)
     
     if constrainSource:
-        mc.cutKey(objs)
+        # Only cut keys from transform attributes, preserving other channels (like camera focal length)
+        transform_attrs = ['translateX','translateY','translateZ','rotateX','rotateY','rotateZ']
+        for obj in objs:
+            for attr in transform_attrs:
+                try:
+                    mc.cutKey(obj, attribute=attr)
+                except:
+                    pass
         for loc, obj in zip(locs, objs):
             mc.parentConstraint(loc, obj)
     
@@ -346,6 +359,7 @@ def ui():
                       annotation='The locators will be parented to world, the current camera, or the last selection.')
     mc.checkBoxGrp('ml_worldBake_constrain_checkBox', label='Maintain Constraints', value1=True,
                    annotation='Constrain source nodes to the created locators, after baking.')
+    mc.separator(height=8, style='single', horizontal=True)
     mc.checkBoxGrp('ml_worldBake_currentFrameOnly_checkBox', label='Current Frame Only',
                    annotation='Create constraint to locator parented to last selected object (no animation baking).')
     mc.checkBoxGrp('ml_worldBake_setToZero_checkBox', label='Set Locator to Zero',
